@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chess Lesson Study Board</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="page-shell">
+    <main class="workspace" aria-label="Chess lesson workspace">
+      <aside class="board-pane">
+        <article class="board-stage-card">
+          <div class="board-stage-head recording-hidden" aria-hidden="true">
+            <div>
+              <p class="eyebrow">Study Board</p>
+              <h1 id="boardTitleDisplay" class="board-stage-title">Untitled position</h1>
+              <p id="boardStageSubtitle" class="board-stage-subtitle">Build a position, inspect it, and analyze it without leaving the board.</p>
+            </div>
+            <div class="head-pills">
+              <span id="modePill" class="pill pill-primary">Setup</span>
+              <span id="validityPill" class="pill">Ready</span>
+            </div>
+          </div>
+
+          <div id="evalBadgeWrap" class="eval-badge-wrap is-hidden" aria-hidden="true">
+            <span id="evalBadge" class="eval-badge">+0.00</span>
+          </div>
+
+          <div class="board-block">
+            <div class="board-column">
+              <div class="board-frame">
+                <div id="boardGrid" class="board-grid" aria-label="Chess board"></div>
+              </div>
+            </div>
+            <div id="evalBarWrap" class="eval-bar-wrap is-hidden" aria-hidden="true">
+              <div class="eval-bar-track">
+                <div id="evalBarWhite" class="eval-bar-white"></div>
+                <div class="eval-bar-divider"></div>
+              </div>
+              <div class="eval-bar-labels">
+                <span>W</span>
+                <span>B</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="board-stage-foot recording-hidden" aria-hidden="true">
+            <div class="meta-strip">
+              <span id="boardContextLabel" class="meta-token">Setup editor</span>
+              <span id="turnToken" class="meta-token">White to move</span>
+              <span id="castlingToken" class="meta-token">Castling KQkq</span>
+              <span id="enPassantToken" class="meta-token">En passant none</span>
+            </div>
+
+            <div class="fen-stack">
+              <div class="fen-card">
+                <div class="fen-label">Current board</div>
+                <code id="currentFenCode" class="fen-code"></code>
+              </div>
+              <div class="fen-card">
+                <div class="fen-label">Setup source</div>
+                <code id="setupFenCode" class="fen-code"></code>
+              </div>
+            </div>
+          </div>
+        </article>
+      </aside>
+
+      <section class="control-pane">
+        <section class="lesson-header" aria-labelledby="titleInput">
+          <label class="sr-only" for="titleInput">Lesson title</label>
+          <input
+            id="titleInput"
+            class="title-input lesson-title-input"
+            type="text"
+            maxlength="120"
+            placeholder="Untitled position"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <div class="lesson-header-actions">
+            <div class="lesson-overflow">
+              <button
+                id="lessonActionsButton"
+                type="button"
+                class="lesson-overflow-trigger"
+                data-action="toggle-lesson-actions"
+                aria-label="Lesson actions"
+                aria-haspopup="menu"
+                aria-controls="lessonActionsMenu"
+                aria-expanded="false"
+              >
+                <span class="lesson-overflow-dots" aria-hidden="true">
+                  <span class="lesson-overflow-dot"></span>
+                  <span class="lesson-overflow-dot"></span>
+                  <span class="lesson-overflow-dot"></span>
+                </span>
+              </button>
+              <div id="lessonActionsMenu" class="lesson-overflow-menu" role="menu" aria-labelledby="lessonActionsButton" hidden>
+                <button id="openLessonButton" type="button" class="lesson-overflow-item" data-action="open-lesson" role="menuitem">Open lesson</button>
+                <button id="saveLessonButton" type="button" class="lesson-overflow-item" data-action="save-lesson" role="menuitem">Save lesson</button>
+              </div>
+            </div>
+          </div>
+          <p id="lessonFileStatus" class="lesson-file-status" aria-live="polite"></p>
+          <input id="lessonFileInput" type="file" accept=".json,.lesson.json,application/json" hidden>
+          <span id="engineReadyLabel" class="sr-only">Stockfish idle</span>
+          <div id="heroBanner" class="hero-banner recording-hidden" aria-hidden="true"></div>
+        </section>
+
+        <div class="control-pane-scroll">
+          <section class="lesson-notation" aria-label="Lesson notation">
+            <div class="notation-toolbar" aria-label="Move navigation">
+              <button id="notationStartButton" type="button" class="notation-nav-button" data-action="navigate-start">Start</button>
+              <button id="notationPrevButton" type="button" class="notation-nav-button" data-action="navigate-back">Back</button>
+              <button id="notationNextButton" type="button" class="notation-nav-button" data-action="navigate-forward">Forward</button>
+            </div>
+            <p id="notationSummary" class="sr-only" aria-live="polite">Play moves from the board to build the lesson tree.</p>
+            <div id="notationPanel" class="notation-panel"></div>
+          </section>
+
+          <details class="workspace-tools">
+            <summary class="workspace-tools-toggle">Tools</summary>
+            <section class="lesson-tools" aria-label="Lesson tools">
+              <nav class="tab-nav" aria-label="Workspace sections">
+                <button class="tab-chip is-active" type="button" data-action="set-tab" data-tab="setup">Setup</button>
+                <button class="tab-chip" type="button" data-action="set-tab" data-tab="analysis">Analysis</button>
+                <button class="tab-chip" type="button" data-action="set-tab" data-tab="pgn">Line</button>
+              </nav>
+
+              <section class="tab-panel is-active" id="setupPanel" aria-label="Setup tab"></section>
+              <section class="tab-panel" id="analysisPanel" aria-label="Analysis tab" hidden></section>
+              <section class="tab-panel" id="pgnPanel" aria-label="Line tab" hidden></section>
+            </section>
+          </details>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="promotionModal" class="promotion-modal" hidden aria-hidden="true">
+    <div class="promotion-dialog" role="dialog" aria-modal="true" aria-labelledby="promotionTitle">
+      <div class="promotion-head">
+        <h3 id="promotionTitle">Choose Promotion</h3>
+        <button type="button" class="icon-button" data-action="dismiss-promotion" aria-label="Close promotion dialog">×</button>
+      </div>
+      <p id="promotionSubtitle" class="promotion-subtitle">Select the piece for this promotion.</p>
+      <div id="promotionChoices" class="promotion-choices"></div>
+    </div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
