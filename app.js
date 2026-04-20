@@ -70,6 +70,8 @@ const dom = {
   lessonActionsMenu: document.getElementById('lessonActionsMenu'),
   openLessonButton: document.getElementById('openLessonButton'),
   saveLessonButton: document.getElementById('saveLessonButton'),
+  toggleNoteMenuButton: document.getElementById('toggleNoteMenuButton'),
+  toggleToolsMenuButton: document.getElementById('toggleToolsMenuButton'),
   colorThemeItems: Array.from(document.querySelectorAll('[data-action="set-color-theme"]')),
   lessonFileInput: document.getElementById('lessonFileInput'),
   lessonFileStatus: document.getElementById('lessonFileStatus'),
@@ -79,6 +81,8 @@ const dom = {
   notationStartButton: document.getElementById('notationStartButton'),
   notationPrevButton: document.getElementById('notationPrevButton'),
   notationNextButton: document.getElementById('notationNextButton'),
+  notationEndButton: document.getElementById('notationEndButton'),
+  workspaceTools: document.getElementById('workspaceTools'),
   setupPanel: document.getElementById('setupPanel'),
   analysisPanel: document.getElementById('analysisPanel'),
   pgnPanel: document.getElementById('pgnPanel'),
@@ -119,6 +123,7 @@ const state = {
     text: '',
     expanded: false,
   },
+  toolsExpanded: false,
   lessonFileStatus: '',
   engine: {
     worker: null,
@@ -417,6 +422,15 @@ function syncColorThemeMenuState() {
   }
 }
 
+function syncLessonVisibilityMenuState() {
+  if (dom.toggleNoteMenuButton) {
+    dom.toggleNoteMenuButton.textContent = state.note.expanded ? 'Hide note' : 'Show note';
+  }
+  if (dom.toggleToolsMenuButton) {
+    dom.toggleToolsMenuButton.textContent = state.toolsExpanded ? 'Hide tools' : 'Show tools';
+  }
+}
+
 function applyColorTheme(theme, options = {}) {
   const { persist = false } = options;
   const nextTheme = normalizeColorTheme(theme);
@@ -473,6 +487,7 @@ function buildLessonPayload() {
     boardOrientation: state.boardOrientation,
     activeTab: state.activeTab,
     advancedOpen: state.setup.advancedOpen,
+    toolsExpanded: state.toolsExpanded,
     currentNodeId: state.analysis.currentNodeId,
     rootId: state.analysis.rootId,
     nodes: cloneAnalysisNodes(state.analysis.nodes),
@@ -1103,6 +1118,7 @@ function validateAndNormalizeLessonPayload(payload) {
     boardOrientation: payload.boardOrientation === 'black' ? 'black' : 'white',
     activeTab: [TAB_SETUP, TAB_ANALYSIS, TAB_PGN].includes(payload.activeTab) ? payload.activeTab : TAB_PGN,
     advancedOpen: Boolean(payload.advancedOpen),
+    toolsExpanded: Boolean(payload.toolsExpanded),
     setupFen: normalizedSetup.setupFen,
     setup: normalizedSetup.setup,
     analysis: validateAndNormalizeLessonNodes(payload.nodes, rootId, currentNodeId, normalizedSetup.setupFen),
@@ -1121,6 +1137,7 @@ function applyLessonState(lessonState) {
   state.boardOrientation = lessonState.boardOrientation;
   state.activeTab = lessonState.activeTab;
   state.setup.advancedOpen = lessonState.advancedOpen;
+  state.toolsExpanded = Boolean(lessonState.toolsExpanded);
   state.setup.armedPiece = null;
   state.setup.pieces = lessonState.setup.pieces;
   state.setup.meta = lessonState.setup.meta;
@@ -1153,6 +1170,7 @@ function hydrateDraft() {
     const boardOrientation = draft?.boardOrientation === 'black' ? 'black' : 'white';
     const activeTab = [TAB_SETUP, TAB_ANALYSIS, TAB_PGN].includes(draft?.activeTab) ? draft.activeTab : TAB_PGN;
     const advancedOpen = Boolean(draft?.advancedOpen);
+    const toolsExpanded = Boolean(draft?.toolsExpanded);
     const normalizedSetup = normalizeSetupFenForLesson(typeof draft?.setupFen === 'string' ? draft.setupFen : DEFAULT_POSITION);
     const analysisHistory = Array.isArray(draft?.analysisHistory)
       ? draft.analysisHistory
@@ -1173,6 +1191,7 @@ function hydrateDraft() {
       boardOrientation,
       activeTab,
       advancedOpen,
+      toolsExpanded,
       setupFen: normalizedSetup.setupFen,
       setup: normalizedSetup.setup,
       analysis: buildLegacyAnalysisTree(analysisHistory, analysisCursor, normalizedSetup.setupFen),
@@ -1487,6 +1506,21 @@ function navigateToAnalysisForward() {
     return;
   }
   jumpToAnalysisNode(nextNodeId);
+}
+
+function navigateToAnalysisEnd() {
+  let cursorId = state.analysis.currentNodeId;
+  let nextNodeId = getAnalysisNextNodeId(cursorId);
+  if (!nextNodeId) {
+    return;
+  }
+
+  while (nextNodeId) {
+    cursorId = nextNodeId;
+    nextNodeId = getAnalysisNextNodeId(cursorId);
+  }
+
+  jumpToAnalysisNode(cursorId);
 }
 
 function resetAnalysisToSetup(options = {}) {
@@ -2460,33 +2494,13 @@ function notationSummaryText() {
     : 'Jump to any point in the lesson tree.';
 }
 
-function notationNoteSummaryText() {
-  const trimmed = state.note.text.trim();
-  if (!trimmed) {
-    return state.note.expanded
-      ? 'Add a plain-text note for this lesson line.'
-      : 'No note saved for this lesson yet.';
-  }
-
-  return state.note.expanded
-    ? 'This note is saved with the draft and lesson file.'
-    : `${trimmed.length} character${trimmed.length === 1 ? '' : 's'} saved.`;
-}
-
 function renderNotationNote() {
   return `
     <section class="notation-note" aria-label="Lesson note">
       <div class="notation-note-head">
         <div>
           <h3 class="notation-note-title">Note</h3>
-          <p class="notation-note-copy">${escapeHtml(notationNoteSummaryText())}</p>
         </div>
-        <button
-          type="button"
-          class="notation-nav-button notation-note-toggle"
-          data-action="toggle-note"
-          aria-expanded="${state.note.expanded ? 'true' : 'false'}"
-        >${state.note.expanded ? 'Hide note' : 'Show note'}</button>
       </div>
       ${state.note.expanded ? `
         <div>
@@ -2513,6 +2527,7 @@ function renderNotationPanel() {
   dom.notationStartButton.disabled = !hasHistory || atStart;
   dom.notationPrevButton.disabled = !hasHistory || atStart;
   dom.notationNextButton.disabled = !hasHistory || atEnd;
+  dom.notationEndButton.disabled = !hasHistory || atEnd;
 
   if (!hasHistory) {
     dom.notationPanel.innerHTML = `
@@ -2838,6 +2853,13 @@ function renderTabs() {
   });
 }
 
+function renderWorkspaceTools() {
+  if (!dom.workspaceTools) {
+    return;
+  }
+  dom.workspaceTools.hidden = !state.toolsExpanded;
+}
+
 function renderAll() {
   renderBoard();
   renderHeaderMeta();
@@ -2847,6 +2869,8 @@ function renderAll() {
   renderAnalysisPanel();
   renderPgnPanel();
   renderTabs();
+  renderWorkspaceTools();
+  syncLessonVisibilityMenuState();
   renderPromotionModal();
 }
 
@@ -3165,13 +3189,22 @@ function handleDocumentClick(event) {
       break;
     case 'toggle-note':
       state.note.expanded = !state.note.expanded;
+      closeLessonActionsMenu({ restoreFocus: true });
       renderNotationPanel();
+      syncLessonVisibilityMenuState();
       schedulePersist();
       if (state.note.expanded) {
         window.setTimeout(() => {
           document.getElementById('notationNoteInput')?.focus();
         }, 0);
       }
+      break;
+    case 'toggle-tools':
+      state.toolsExpanded = !state.toolsExpanded;
+      closeLessonActionsMenu({ restoreFocus: true });
+      renderWorkspaceTools();
+      syncLessonVisibilityMenuState();
+      schedulePersist();
       break;
     case 'reset-analysis':
       resetAnalysisToSetup({ keepTab: true });
@@ -3185,6 +3218,9 @@ function handleDocumentClick(event) {
       break;
     case 'navigate-forward':
       navigateToAnalysisForward();
+      break;
+    case 'navigate-end':
+      navigateToAnalysisEnd();
       break;
     case 'jump-node':
       jumpToAnalysisNode(actionEl.dataset.nodeId || '');

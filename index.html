@@ -123,6 +123,8 @@
               <div id="lessonActionsMenu" class="lesson-overflow-menu" role="menu" aria-labelledby="lessonActionsButton" hidden>
                 <button id="openLessonButton" type="button" class="lesson-overflow-item" data-action="open-lesson" role="menuitem">Open lesson</button>
                 <button id="saveLessonButton" type="button" class="lesson-overflow-item" data-action="save-lesson" role="menuitem">Save lesson</button>
+                <button id="toggleNoteMenuButton" type="button" class="lesson-overflow-item" data-action="toggle-note" role="menuitem">Show note</button>
+                <button id="toggleToolsMenuButton" type="button" class="lesson-overflow-item" data-action="toggle-tools" role="menuitem">Show tools</button>
                 <div class="lesson-overflow-divider" role="separator"></div>
                 <p class="lesson-overflow-section-label" role="presentation">Theme</p>
                 <button
@@ -160,17 +162,25 @@
 
         <div class="control-pane-scroll">
           <section class="lesson-notation" aria-label="Lesson notation">
-            <div class="notation-toolbar" aria-label="Move navigation">
-              <button id="notationStartButton" type="button" class="notation-nav-button" data-action="navigate-start">Start</button>
-              <button id="notationPrevButton" type="button" class="notation-nav-button" data-action="navigate-back">Back</button>
-              <button id="notationNextButton" type="button" class="notation-nav-button" data-action="navigate-forward">Forward</button>
-            </div>
             <p id="notationSummary" class="sr-only" aria-live="polite">Play moves from the board to build the lesson tree.</p>
             <div id="notationPanel" class="notation-panel"></div>
+            <div class="notation-toolbar" aria-label="Move navigation">
+              <button id="notationStartButton" type="button" class="notation-nav-button" data-action="navigate-start" aria-label="Go to start">
+                <span aria-hidden="true">⏮</span>
+              </button>
+              <button id="notationPrevButton" type="button" class="notation-nav-button" data-action="navigate-back" aria-label="Go to previous move">
+                <span aria-hidden="true">‹</span>
+              </button>
+              <button id="notationNextButton" type="button" class="notation-nav-button" data-action="navigate-forward" aria-label="Go to next move">
+                <span aria-hidden="true">›</span>
+              </button>
+              <button id="notationEndButton" type="button" class="notation-nav-button" data-action="navigate-end" aria-label="Go to end">
+                <span aria-hidden="true">⏭</span>
+              </button>
+            </div>
           </section>
 
-          <details class="workspace-tools">
-            <summary class="workspace-tools-toggle">Tools</summary>
+          <section id="workspaceTools" class="workspace-tools" hidden>
             <section class="lesson-tools" aria-label="Lesson tools">
               <nav class="tab-nav" aria-label="Workspace sections">
                 <button class="tab-chip is-active" type="button" data-action="set-tab" data-tab="setup">Setup</button>
@@ -182,7 +192,7 @@
               <section class="tab-panel" id="analysisPanel" aria-label="Analysis tab" hidden></section>
               <section class="tab-panel" id="pgnPanel" aria-label="Line tab" hidden></section>
             </section>
-          </details>
+          </section>
         </div>
       </section>
     </main>

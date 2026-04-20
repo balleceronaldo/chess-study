@@ -799,7 +799,7 @@ code {
   top: 0.9rem;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 0.9rem;
+  gap: 0;
   align-self: start;
   max-height: calc(100vh - 1.8rem);
 }
@@ -808,7 +808,8 @@ code {
   display: grid;
   gap: 0.9rem;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 0 0 0.3rem;
   border: 0;
   background: transparent;
@@ -826,8 +827,9 @@ code {
 .lesson-header {
   position: relative;
   z-index: 1;
-  padding: 0.3rem 0 0.9rem;
-  border-bottom: 1px solid var(--header-border);
+  gap: 0.45rem;
+  padding: 0.3rem 0 0.35rem;
+  border-bottom: 0;
   background: var(--header-bg);
 }
 
@@ -836,7 +838,11 @@ code {
   border-top: 1px solid var(--section-divider);
 }
 
-.lesson-notation,
+.lesson-notation {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .lesson-tools {
   padding-top: 0.9rem;
   border-top: 1px solid var(--section-divider-soft);
@@ -847,19 +853,14 @@ code {
   gap: 0.2rem;
 }
 
-.lesson-title-input {
-  min-height: auto;
-  padding: 0 0 0.4rem;
-  border: 0;
-  border-bottom: 1px solid var(--title-underline);
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+.title-input.lesson-title-input {
+  min-height: 3.6rem;
+  padding: 0.84rem 0.95rem;
   font-family: var(--font-display);
   font-size: var(--notation-text-size);
   font-weight: 700;
   letter-spacing: -0.045em;
-  line-height: 1.1;
+  line-height: 1.2;
 }
 
 .lesson-title-input::placeholder {
@@ -1116,11 +1117,15 @@ code {
 }
 
 .lesson-file-status {
-  min-height: 1.1rem;
+  min-height: 0;
   margin: 0;
   color: var(--text-soft);
   font-size: 0.82rem;
   line-height: 1.4;
+}
+
+.lesson-file-status:empty {
+  display: none;
 }
 
 .notation-panel {
@@ -1221,6 +1226,10 @@ code {
   align-items: flex-start;
 }
 
+.notation-note-head > div {
+  min-width: 0;
+}
+
 .notation-note-title {
   margin: 0;
   font-family: var(--font-display);
@@ -1234,35 +1243,41 @@ code {
   line-height: 1.45;
 }
 
-.notation-note-toggle {
-  white-space: nowrap;
-}
-
 .notation-note-input {
   min-height: 7rem;
 }
 
 .notation-toolbar {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
+  gap: 0.35rem;
   align-items: center;
+  margin-top: 0.15rem;
 }
 
 .notation-nav-button {
-  min-height: 2.05rem;
-  padding: 0.3rem 0.75rem;
-  border: 1px solid var(--nav-button-border);
-  border-radius: var(--radius-pill);
-  background: var(--nav-button-bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.7rem;
+  background: transparent;
   color: var(--text-muted);
-  font-size: 0.86rem;
-  font-weight: 700;
-  transition: border-color var(--ease), color var(--ease), background-color var(--ease);
+  font-size: 1.35rem;
+  line-height: 1;
+  transition: color var(--ease), background-color var(--ease);
 }
 
-.notation-nav-button:hover {
-  border-color: var(--nav-button-hover-border);
+.notation-nav-button > span {
+  display: block;
+  line-height: 1;
+}
+
+.notation-nav-button:hover,
+.notation-nav-button:focus-visible {
+  outline: none;
   background: var(--nav-button-hover-bg);
   color: var(--accent-strong);
 }
@@ -1665,38 +1680,8 @@ code {
   border-top: 1px solid var(--workspace-tools-border);
 }
 
-.workspace-tools-toggle {
-  list-style: none;
-  cursor: pointer;
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.workspace-tools-toggle::-webkit-details-marker {
-  display: none;
-}
-
-.workspace-tools-toggle::marker {
-  content: "";
-}
-
-.workspace-tools-toggle::after {
-  content: "Show";
-  margin-left: 0.65rem;
-  letter-spacing: normal;
-  text-transform: none;
-  color: var(--text-soft);
-}
-
-.workspace-tools[open] .workspace-tools-toggle::after {
-  content: "Hide";
-}
-
 .workspace-tools .lesson-tools {
-  padding-top: 0.8rem;
+  padding-top: 0;
   border-top: 0;
 }
 
