@@ -134,7 +134,7 @@
   --legal-capture: rgba(173, 60, 60, 0.78);
   --drag-hover: rgba(255, 210, 98, 0.42);
   --annotation-accent-rgb: 84, 168, 109;
-  --annotation-paint: rgba(var(--annotation-accent-rgb), 0.42);
+  --annotation-paint: rgba(var(--annotation-accent-rgb), 0.66);
   --annotation-ring: rgba(var(--annotation-accent-rgb), 0.92);
   --annotation-arrow: rgba(var(--annotation-accent-rgb), 0.94);
   --modal-scrim: rgba(12, 18, 28, 0.46);
@@ -280,7 +280,7 @@
   --legal-capture: rgba(196, 102, 75, 0.86);
   --drag-hover: rgba(140, 183, 255, 0.24);
   --annotation-accent-rgb: 120, 196, 134;
-  --annotation-paint: rgba(var(--annotation-accent-rgb), 0.38);
+  --annotation-paint: rgba(var(--annotation-accent-rgb), 0.62);
   --annotation-ring: rgba(var(--annotation-accent-rgb), 0.94);
   --annotation-arrow: rgba(var(--annotation-accent-rgb), 0.94);
   --modal-scrim: rgba(5, 10, 18, 0.72);
