@@ -166,16 +166,34 @@
             <div id="notationPanel" class="notation-panel"></div>
             <div class="notation-toolbar" aria-label="Move navigation">
               <button id="notationStartButton" type="button" class="notation-nav-button" data-action="navigate-start" aria-label="Go to start">
-                <span aria-hidden="true">⏮</span>
+                <span class="notation-nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" focusable="false">
+                    <path d="M6 4.75v10.5"></path>
+                    <path d="M14.5 5.75 9 10l5.5 4.25"></path>
+                  </svg>
+                </span>
               </button>
               <button id="notationPrevButton" type="button" class="notation-nav-button" data-action="navigate-back" aria-label="Go to previous move">
-                <span aria-hidden="true">‹</span>
+                <span class="notation-nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" focusable="false">
+                    <path d="M13.75 5.75 8.25 10l5.5 4.25"></path>
+                  </svg>
+                </span>
               </button>
               <button id="notationNextButton" type="button" class="notation-nav-button" data-action="navigate-forward" aria-label="Go to next move">
-                <span aria-hidden="true">›</span>
+                <span class="notation-nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" focusable="false">
+                    <path d="m6.25 5.75 5.5 4.25-5.5 4.25"></path>
+                  </svg>
+                </span>
               </button>
               <button id="notationEndButton" type="button" class="notation-nav-button" data-action="navigate-end" aria-label="Go to end">
-                <span aria-hidden="true">⏭</span>
+                <span class="notation-nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" focusable="false">
+                    <path d="M14 4.75v10.5"></path>
+                    <path d="m5.5 5.75 5.5 4.25-5.5 4.25"></path>
+                  </svg>
+                </span>
               </button>
             </div>
           </section>

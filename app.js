@@ -2343,10 +2343,11 @@ function renderBoard() {
 }
 
 function syncBoardSize() {
-  if (!dom.boardFrame || !dom.boardColumn) {
+  if (!dom.rootElement || !dom.boardFrame || !dom.boardColumn) {
     return;
   }
 
+  dom.rootElement.style.setProperty('--board-side-gap', '0px');
   dom.boardFrame.style.removeProperty('--board-size');
 
   const columnWidth = dom.boardColumn.clientWidth;
@@ -2363,6 +2364,10 @@ function syncBoardSize() {
   if (boardSize > 0) {
     dom.boardFrame.style.setProperty('--board-size', `${boardSize}px`);
   }
+
+  const boardWidth = dom.boardFrame.offsetWidth;
+  const boardSideGap = Math.max(0, (columnWidth - boardWidth) / 2);
+  dom.rootElement.style.setProperty('--board-side-gap', `${boardSideGap}px`);
 }
 
 function renderHeaderMeta() {
