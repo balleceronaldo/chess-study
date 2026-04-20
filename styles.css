@@ -640,7 +640,7 @@ code {
   fill: none;
   stroke: var(--annotation-arrow);
   stroke-width: 18;
-  stroke-linecap: round;
+  stroke-linecap: butt;
   stroke-linejoin: round;
 }
 

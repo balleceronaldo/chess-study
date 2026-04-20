@@ -7,6 +7,8 @@ const FILE_LABELS = Object.freeze(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
 const SQUARE_PATTERN = /^[a-h][1-8]$/;
 const BOARD_VIEWBOX_SIZE = 800;
 const BOARD_CELL_SIZE = BOARD_VIEWBOX_SIZE / 8;
+const ANNOTATION_ARROW_HEAD_LENGTH = 24;
+const ANNOTATION_ARROW_HEAD_WIDTH = 24;
 const TAB_SETUP = 'setup';
 const TAB_ANALYSIS = 'analysis';
 const TAB_PGN = 'pgn';
@@ -2058,6 +2060,17 @@ function buildAnnotationArrowMarkup(from, to, options = {}) {
     return '';
   }
 
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const distance = Math.hypot(deltaX, deltaY);
+  if (distance <= ANNOTATION_ARROW_HEAD_LENGTH) {
+    return '';
+  }
+
+  const unitX = deltaX / distance;
+  const unitY = deltaY / distance;
+  const lineEndX = end.x - (unitX * ANNOTATION_ARROW_HEAD_LENGTH);
+  const lineEndY = end.y - (unitY * ANNOTATION_ARROW_HEAD_LENGTH);
   const markerId = preview ? 'annotationArrowPreviewHead' : 'annotationArrowHead';
   const className = `board-annotation-arrow ${preview ? 'is-preview' : ''}`.trim();
   return `
@@ -2065,8 +2078,8 @@ function buildAnnotationArrowMarkup(from, to, options = {}) {
       class="${className}"
       x1="${start.x}"
       y1="${start.y}"
-      x2="${end.x}"
-      y2="${end.y}"
+      x2="${lineEndX}"
+      y2="${lineEndY}"
       marker-end="url(#${markerId})"
     ></line>
   `;
@@ -2110,11 +2123,11 @@ function renderAnnotationOverlay() {
 
   dom.boardAnnotationOverlay.innerHTML = `
     <defs>
-      <marker id="annotationArrowHead" markerWidth="18" markerHeight="18" refX="14" refY="9" orient="auto" markerUnits="userSpaceOnUse">
-        <path class="board-annotation-arrow-head" d="M 0 0 L 18 9 L 0 18 z"></path>
+      <marker id="annotationArrowHead" viewBox="0 0 ${ANNOTATION_ARROW_HEAD_LENGTH} ${ANNOTATION_ARROW_HEAD_WIDTH}" markerWidth="${ANNOTATION_ARROW_HEAD_LENGTH}" markerHeight="${ANNOTATION_ARROW_HEAD_WIDTH}" refX="0" refY="${ANNOTATION_ARROW_HEAD_WIDTH / 2}" orient="auto" markerUnits="userSpaceOnUse">
+        <path class="board-annotation-arrow-head" d="M 0 0 L ${ANNOTATION_ARROW_HEAD_LENGTH} ${ANNOTATION_ARROW_HEAD_WIDTH / 2} L 0 ${ANNOTATION_ARROW_HEAD_WIDTH} z"></path>
       </marker>
-      <marker id="annotationArrowPreviewHead" markerWidth="18" markerHeight="18" refX="14" refY="9" orient="auto" markerUnits="userSpaceOnUse">
-        <path class="board-annotation-arrow-head is-preview" d="M 0 0 L 18 9 L 0 18 z"></path>
+      <marker id="annotationArrowPreviewHead" viewBox="0 0 ${ANNOTATION_ARROW_HEAD_LENGTH} ${ANNOTATION_ARROW_HEAD_WIDTH}" markerWidth="${ANNOTATION_ARROW_HEAD_LENGTH}" markerHeight="${ANNOTATION_ARROW_HEAD_WIDTH}" refX="0" refY="${ANNOTATION_ARROW_HEAD_WIDTH / 2}" orient="auto" markerUnits="userSpaceOnUse">
+        <path class="board-annotation-arrow-head is-preview" d="M 0 0 L ${ANNOTATION_ARROW_HEAD_LENGTH} ${ANNOTATION_ARROW_HEAD_WIDTH / 2} L 0 ${ANNOTATION_ARROW_HEAD_WIDTH} z"></path>
       </marker>
     </defs>
     ${savedArrows}
