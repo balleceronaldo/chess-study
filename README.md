@@ -35,5 +35,7 @@ The app stores one browser-local draft under `setup-analysis-draft-v1`, includin
 - advanced-controls open state
 - current lesson-tree position
 - the full lesson move tree, including variations and sub-variations
+- board annotations, including painted squares, circles, and arrows
+- lesson note text and whether the note panel is expanded
 
 You can also save and reopen lesson files as `*.lesson.json` for exact restoration outside local browser storage.

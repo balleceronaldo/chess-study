@@ -1,10 +1,23 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Chess Lesson Study Board</title>
   <link rel="icon" type="image/png" href="./assets/pieces/app_icon.png">
+  <script>
+    (() => {
+      const storageKey = 'color-theme-v1';
+      let theme = 'light';
+      try {
+        const storedTheme = window.localStorage.getItem(storageKey);
+        if (storedTheme === 'dark' || storedTheme === 'light') {
+          theme = storedTheme;
+        }
+      } catch {}
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -31,7 +44,16 @@
           <div class="board-block">
             <div class="board-column">
               <div class="board-frame">
-                <div id="boardGrid" class="board-grid" aria-label="Chess board"></div>
+                <div class="board-surface">
+                  <div id="boardGrid" class="board-grid" aria-label="Chess board"></div>
+                  <svg
+                    id="boardAnnotationOverlay"
+                    class="board-annotation-overlay"
+                    viewBox="0 0 800 800"
+                    aria-hidden="true"
+                    focusable="false"
+                  ></svg>
+                </div>
               </div>
             </div>
             <div id="evalBarWrap" class="eval-bar-wrap is-hidden" aria-hidden="true">
@@ -101,6 +123,32 @@
               <div id="lessonActionsMenu" class="lesson-overflow-menu" role="menu" aria-labelledby="lessonActionsButton" hidden>
                 <button id="openLessonButton" type="button" class="lesson-overflow-item" data-action="open-lesson" role="menuitem">Open lesson</button>
                 <button id="saveLessonButton" type="button" class="lesson-overflow-item" data-action="save-lesson" role="menuitem">Save lesson</button>
+                <div class="lesson-overflow-divider" role="separator"></div>
+                <p class="lesson-overflow-section-label" role="presentation">Theme</p>
+                <button
+                  id="lightThemeButton"
+                  type="button"
+                  class="lesson-overflow-item lesson-overflow-item-radio"
+                  data-action="set-color-theme"
+                  data-value="light"
+                  role="menuitemradio"
+                  aria-checked="false"
+                >
+                  <span>Light</span>
+                  <span class="lesson-overflow-check" aria-hidden="true"></span>
+                </button>
+                <button
+                  id="darkThemeButton"
+                  type="button"
+                  class="lesson-overflow-item lesson-overflow-item-radio"
+                  data-action="set-color-theme"
+                  data-value="dark"
+                  role="menuitemradio"
+                  aria-checked="false"
+                >
+                  <span>Dark</span>
+                  <span class="lesson-overflow-check" aria-hidden="true"></span>
+                </button>
               </div>
             </div>
           </div>

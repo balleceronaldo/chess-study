@@ -1,8 +1,12 @@
 import { Chess, DEFAULT_POSITION, validateFen } from './vendor/chess.js';
 
 const STORAGE_KEY = 'setup-analysis-draft-v1';
+const COLOR_THEME_STORAGE_KEY = 'color-theme-v1';
 const PIECE_ORDER = ['K', 'Q', 'R', 'B', 'N', 'P'];
 const FILE_LABELS = Object.freeze(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+const SQUARE_PATTERN = /^[a-h][1-8]$/;
+const BOARD_VIEWBOX_SIZE = 800;
+const BOARD_CELL_SIZE = BOARD_VIEWBOX_SIZE / 8;
 const TAB_SETUP = 'setup';
 const TAB_ANALYSIS = 'analysis';
 const TAB_PGN = 'pgn';
@@ -41,7 +45,9 @@ const PIECE_ASSETS = Object.freeze({
 });
 
 const dom = {
+  rootElement: document.documentElement,
   boardGrid: document.getElementById('boardGrid'),
+  boardAnnotationOverlay: document.getElementById('boardAnnotationOverlay'),
   boardFrame: document.querySelector('.board-frame'),
   boardColumn: document.querySelector('.board-column'),
   boardTitleDisplay: document.getElementById('boardTitleDisplay'),
@@ -64,6 +70,7 @@ const dom = {
   lessonActionsMenu: document.getElementById('lessonActionsMenu'),
   openLessonButton: document.getElementById('openLessonButton'),
   saveLessonButton: document.getElementById('saveLessonButton'),
+  colorThemeItems: Array.from(document.querySelectorAll('[data-action="set-color-theme"]')),
   lessonFileInput: document.getElementById('lessonFileInput'),
   lessonFileStatus: document.getElementById('lessonFileStatus'),
   heroBanner: document.getElementById('heroBanner'),
@@ -82,6 +89,7 @@ const dom = {
 
 const state = {
   title: DEFAULT_TITLE,
+  colorTheme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
   boardOrientation: 'white',
   activeTab: TAB_PGN,
   setup: {
@@ -107,6 +115,10 @@ const state = {
     boardMessage: 'Open Analysis to play legal moves from this setup.',
     pendingPromotion: null,
   },
+  note: {
+    text: '',
+    expanded: false,
+  },
   lessonFileStatus: '',
   engine: {
     worker: null,
@@ -128,6 +140,15 @@ const state = {
     scoreValue: null,
     evalLabel: '0.00',
     bestMove: '',
+  },
+  annotations: {
+    enabled: false,
+    paintedSquares: new Set(),
+    circledSquares: new Set(),
+    arrows: [],
+    gesture: createEmptyAnnotationGestureState(),
+    suppressBoardClickUntil: 0,
+    suppressContextMenu: false,
   },
   persistTimer: null,
   boardDragHoverSquare: null,
@@ -157,6 +178,74 @@ function cloneMeta(meta) {
     enPassant: meta.enPassant,
     halfmove: meta.halfmove,
     fullmove: meta.fullmove,
+  };
+}
+
+function createEmptyAnnotationGestureState() {
+  return {
+    active: false,
+    button: null,
+    mode: '',
+    startSquare: '',
+    lastSquare: '',
+    dragged: false,
+  };
+}
+
+function normalizeAnnotationSquares(value) {
+  if (!Array.isArray(value)) {
+    return new Set();
+  }
+  return new Set(
+    value
+      .map((square) => String(square || '').trim().toLowerCase())
+      .filter((square) => SQUARE_PATTERN.test(square)),
+  );
+}
+
+function normalizeAnnotationState(value) {
+  return {
+    paintedSquares: normalizeAnnotationSquares(value?.paintedSquares),
+    circledSquares: normalizeAnnotationSquares(value?.circledSquares),
+    arrows: normalizeAnnotationArrows(value?.arrows),
+  };
+}
+
+function buildAnnotationPayload() {
+  return {
+    paintedSquares: Array.from(state.annotations.paintedSquares).sort(),
+    circledSquares: Array.from(state.annotations.circledSquares).sort(),
+    arrows: state.annotations.arrows.map((arrow) => ({ from: arrow.from, to: arrow.to })),
+  };
+}
+
+function normalizeAnnotationArrows(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const arrows = [];
+  value.forEach((entry) => {
+    const from = String(entry?.from || '').trim().toLowerCase();
+    const to = String(entry?.to || '').trim().toLowerCase();
+    if (!SQUARE_PATTERN.test(from) || !SQUARE_PATTERN.test(to) || from === to) {
+      return;
+    }
+    const key = `${from}:${to}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    arrows.push({ from, to });
+  });
+  return arrows;
+}
+
+function normalizeNoteState(value) {
+  return {
+    text: typeof value?.text === 'string' ? value.text : '',
+    expanded: Boolean(value?.expanded),
   };
 }
 
@@ -299,6 +388,54 @@ function syncLessonFileStatus(message) {
   }
 }
 
+function normalizeColorTheme(value) {
+  return value === 'dark' ? 'dark' : 'light';
+}
+
+function readStoredColorTheme() {
+  try {
+    return normalizeColorTheme(window.localStorage.getItem(COLOR_THEME_STORAGE_KEY));
+  } catch (error) {
+    console.warn('Unable to read color theme preference.', error);
+    return 'light';
+  }
+}
+
+function persistColorTheme(theme) {
+  try {
+    window.localStorage.setItem(COLOR_THEME_STORAGE_KEY, theme);
+  } catch (error) {
+    console.warn('Unable to persist color theme preference.', error);
+  }
+}
+
+function syncColorThemeMenuState() {
+  for (const item of dom.colorThemeItems) {
+    const isSelected = item.dataset.value === state.colorTheme;
+    item.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+    item.classList.toggle('is-selected', isSelected);
+  }
+}
+
+function applyColorTheme(theme, options = {}) {
+  const { persist = false } = options;
+  const nextTheme = normalizeColorTheme(theme);
+  state.colorTheme = nextTheme;
+  if (dom.rootElement) {
+    dom.rootElement.dataset.theme = nextTheme;
+  }
+  syncColorThemeMenuState();
+  if (persist) {
+    persistColorTheme(nextTheme);
+  }
+}
+
+function initializeColorTheme() {
+  const bootTheme = dom.rootElement?.dataset.theme;
+  const initialTheme = bootTheme ? normalizeColorTheme(bootTheme) : readStoredColorTheme();
+  applyColorTheme(initialTheme);
+}
+
 function isLessonActionsMenuOpen() {
   return Boolean(dom.lessonActionsMenu && !dom.lessonActionsMenu.hidden);
 }
@@ -339,6 +476,8 @@ function buildLessonPayload() {
     currentNodeId: state.analysis.currentNodeId,
     rootId: state.analysis.rootId,
     nodes: cloneAnalysisNodes(state.analysis.nodes),
+    annotations: buildAnnotationPayload(),
+    note: normalizeNoteState(state.note),
   };
 }
 
@@ -967,6 +1106,8 @@ function validateAndNormalizeLessonPayload(payload) {
     setupFen: normalizedSetup.setupFen,
     setup: normalizedSetup.setup,
     analysis: validateAndNormalizeLessonNodes(payload.nodes, rootId, currentNodeId, normalizedSetup.setupFen),
+    annotations: normalizeAnnotationState(payload.annotations),
+    note: normalizeNoteState(payload.note),
   };
 }
 
@@ -986,6 +1127,13 @@ function applyLessonState(lessonState) {
   state.setupFen = lessonState.setupFen;
   state.setup.fenInput = lessonState.setupFen;
   state.setup.fenError = '';
+  state.note = normalizeNoteState(lessonState.note);
+  state.annotations.enabled = false;
+  state.annotations.paintedSquares = new Set(lessonState.annotations?.paintedSquares || []);
+  state.annotations.circledSquares = new Set(lessonState.annotations?.circledSquares || []);
+  state.annotations.arrows = normalizeAnnotationArrows(lessonState.annotations?.arrows);
+  state.annotations.suppressContextMenu = false;
+  state.annotations.gesture = createEmptyAnnotationGestureState();
   assignAnalysisTree(lessonState.analysis);
 }
 
@@ -1028,6 +1176,8 @@ function hydrateDraft() {
       setupFen: normalizedSetup.setupFen,
       setup: normalizedSetup.setup,
       analysis: buildLegacyAnalysisTree(analysisHistory, analysisCursor, normalizedSetup.setupFen),
+      annotations: normalizeAnnotationState(draft?.annotations),
+      note: normalizeNoteState(draft?.note),
     });
   } catch (error) {
     console.warn('Unable to restore draft.', error);
@@ -1806,6 +1956,251 @@ function currentBoardFenLabel() {
   return state.activeTab === TAB_SETUP ? state.setupFen : state.analysis.currentFen;
 }
 
+function annotationsVisible() {
+  return state.activeTab !== TAB_SETUP;
+}
+
+function annotateModeActive() {
+  return annotationsVisible() && state.annotations.enabled;
+}
+
+function squareFromEventTarget(target) {
+  if (!(target instanceof Element)) {
+    return '';
+  }
+  const squareEl = target.closest('.board-square');
+  if (!squareEl || !dom.boardGrid.contains(squareEl)) {
+    return '';
+  }
+  return squareEl.dataset.square || '';
+}
+
+function squareFromClientPoint(clientX, clientY) {
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+    return '';
+  }
+  return squareFromEventTarget(document.elementFromPoint(clientX, clientY));
+}
+
+function annotationMarkupForSquare(square) {
+  if (!annotationsVisible()) {
+    return '';
+  }
+  const layers = [];
+  if (state.annotations.paintedSquares.has(square)) {
+    layers.push('<span class="board-annotation board-annotation-paint" aria-hidden="true"></span>');
+  }
+  if (state.annotations.circledSquares.has(square)) {
+    layers.push('<span class="board-annotation board-annotation-circle" aria-hidden="true"></span>');
+  }
+  return layers.join('');
+}
+
+function annotationArrowKey(from, to) {
+  return `${from}:${to}`;
+}
+
+function squareCenterPoint(square, orientation = state.boardOrientation) {
+  if (!SQUARE_PATTERN.test(square)) {
+    return null;
+  }
+
+  const fileIndex = square.charCodeAt(0) - 97;
+  const rankIndex = Number.parseInt(square[1], 10) - 1;
+  const col = orientation === 'black' ? 7 - fileIndex : fileIndex;
+  const row = orientation === 'black' ? rankIndex : 7 - rankIndex;
+
+  return {
+    x: (col * BOARD_CELL_SIZE) + (BOARD_CELL_SIZE / 2),
+    y: (row * BOARD_CELL_SIZE) + (BOARD_CELL_SIZE / 2),
+  };
+}
+
+function buildAnnotationArrowMarkup(from, to, options = {}) {
+  const { preview = false } = options;
+  const start = squareCenterPoint(from);
+  const end = squareCenterPoint(to);
+  if (!start || !end || (start.x === end.x && start.y === end.y)) {
+    return '';
+  }
+
+  const markerId = preview ? 'annotationArrowPreviewHead' : 'annotationArrowHead';
+  const className = `board-annotation-arrow ${preview ? 'is-preview' : ''}`.trim();
+  return `
+    <line
+      class="${className}"
+      x1="${start.x}"
+      y1="${start.y}"
+      x2="${end.x}"
+      y2="${end.y}"
+      marker-end="url(#${markerId})"
+    ></line>
+  `;
+}
+
+function currentPreviewArrow() {
+  const { gesture } = state.annotations;
+  if (!gesture.active || gesture.mode !== 'arrow') {
+    return null;
+  }
+  if (!SQUARE_PATTERN.test(gesture.startSquare) || !SQUARE_PATTERN.test(gesture.lastSquare) || gesture.startSquare === gesture.lastSquare) {
+    return null;
+  }
+  return {
+    from: gesture.startSquare,
+    to: gesture.lastSquare,
+  };
+}
+
+function renderAnnotationOverlay() {
+  if (!dom.boardAnnotationOverlay) {
+    return;
+  }
+  if (!annotationsVisible()) {
+    dom.boardAnnotationOverlay.innerHTML = '';
+    return;
+  }
+
+  const savedArrows = state.annotations.arrows
+    .map((arrow) => buildAnnotationArrowMarkup(arrow.from, arrow.to))
+    .join('');
+  const previewArrow = currentPreviewArrow();
+  const previewMarkup = previewArrow
+    ? buildAnnotationArrowMarkup(previewArrow.from, previewArrow.to, { preview: true })
+    : '';
+
+  if (!savedArrows && !previewMarkup) {
+    dom.boardAnnotationOverlay.innerHTML = '';
+    return;
+  }
+
+  dom.boardAnnotationOverlay.innerHTML = `
+    <defs>
+      <marker id="annotationArrowHead" markerWidth="18" markerHeight="18" refX="14" refY="9" orient="auto" markerUnits="userSpaceOnUse">
+        <path class="board-annotation-arrow-head" d="M 0 0 L 18 9 L 0 18 z"></path>
+      </marker>
+      <marker id="annotationArrowPreviewHead" markerWidth="18" markerHeight="18" refX="14" refY="9" orient="auto" markerUnits="userSpaceOnUse">
+        <path class="board-annotation-arrow-head is-preview" d="M 0 0 L 18 9 L 0 18 z"></path>
+      </marker>
+    </defs>
+    ${savedArrows}
+    ${previewMarkup}
+  `;
+}
+
+function hasAnyAnnotations() {
+  return state.annotations.paintedSquares.size > 0
+    || state.annotations.circledSquares.size > 0
+    || state.annotations.arrows.length > 0;
+}
+
+function resetAnnotationGesture() {
+  state.annotations.gesture = createEmptyAnnotationGestureState();
+}
+
+function cancelAnnotationGesture() {
+  const shouldRefreshOverlay = state.annotations.gesture.active && state.annotations.gesture.mode === 'arrow';
+  resetAnnotationGesture();
+  state.annotations.suppressBoardClickUntil = 0;
+  state.annotations.suppressContextMenu = false;
+  if (shouldRefreshOverlay) {
+    renderAnnotationOverlay();
+  }
+}
+
+function paintAnnotationSquare(square) {
+  if (!SQUARE_PATTERN.test(square) || state.annotations.paintedSquares.has(square)) {
+    return false;
+  }
+  state.annotations.paintedSquares.add(square);
+  return true;
+}
+
+function clearAllAnnotations() {
+  if (!hasAnyAnnotations()) {
+    return false;
+  }
+  state.annotations.paintedSquares.clear();
+  state.annotations.circledSquares.clear();
+  state.annotations.arrows = [];
+  return true;
+}
+
+function toggleAnnotationCircle(square) {
+  if (!SQUARE_PATTERN.test(square)) {
+    return false;
+  }
+  if (state.annotations.circledSquares.has(square)) {
+    state.annotations.circledSquares.delete(square);
+  } else {
+    state.annotations.circledSquares.add(square);
+  }
+  return true;
+}
+
+function addAnnotationArrow(from, to) {
+  if (!SQUARE_PATTERN.test(from) || !SQUARE_PATTERN.test(to) || from === to) {
+    return false;
+  }
+  const arrowExists = state.annotations.arrows.some((arrow) => annotationArrowKey(arrow.from, arrow.to) === annotationArrowKey(from, to));
+  if (arrowExists) {
+    return false;
+  }
+  state.annotations.arrows = [...state.annotations.arrows, { from, to }];
+  return true;
+}
+
+function commitAnnotationRender(changed) {
+  if (!changed) {
+    return false;
+  }
+  renderBoard();
+  schedulePersist();
+  return true;
+}
+
+function setAnnotateMode(enabled) {
+  const nextEnabled = Boolean(enabled);
+  if (state.annotations.enabled === nextEnabled) {
+    return;
+  }
+  cancelAnnotationGesture();
+  state.annotations.enabled = nextEnabled;
+  if (nextEnabled) {
+    clearAnalysisSelection();
+  }
+  renderBoard();
+  renderAnalysisPanel();
+  renderPgnPanel();
+}
+
+function applyAnnotationGestureSquare(square) {
+  const { gesture } = state.annotations;
+  if (!gesture.active || !SQUARE_PATTERN.test(square) || square === gesture.lastSquare) {
+    return;
+  }
+
+  let changed = false;
+  if (gesture.button === 2) {
+    if (gesture.mode === 'paint') {
+      if (!gesture.dragged) {
+        gesture.dragged = true;
+        changed = paintAnnotationSquare(gesture.startSquare) || changed;
+      }
+      changed = paintAnnotationSquare(square) || changed;
+    } else if (gesture.mode === 'arrow') {
+      gesture.dragged = true;
+    }
+  }
+
+  gesture.lastSquare = square;
+  if (gesture.mode === 'arrow') {
+    renderAnnotationOverlay();
+    return;
+  }
+  commitAnnotationRender(changed);
+}
+
 function squareAtDisplayCell(row, col, orientation) {
   if (orientation === 'black') {
     return `${String.fromCharCode(104 - col)}${row + 1}`;
@@ -1857,6 +2252,7 @@ function buildBoardMarkup() {
       const labelClass = isLight ? 'coord-light' : 'coord-dark';
       markup += `
         <div class="${classes.join(' ')}" data-square="${square}" data-piece="${piece}">
+          ${annotationMarkupForSquare(square)}
           ${rankLabel ? `<span class="coord-rank ${labelClass}">${rankLabel}</span>` : ''}
           ${fileLabel ? `<span class="coord-file ${labelClass}">${fileLabel}</span>` : ''}
           ${piece ? `
@@ -1873,6 +2269,7 @@ function buildBoardMarkup() {
 
 function renderBoard() {
   dom.boardGrid.innerHTML = buildBoardMarkup();
+  renderAnnotationOverlay();
   syncBoardSize();
 
   const hasEval = state.activeTab !== TAB_SETUP && Number.isFinite(state.engine.scoreValue);
@@ -2063,6 +2460,49 @@ function notationSummaryText() {
     : 'Jump to any point in the lesson tree.';
 }
 
+function notationNoteSummaryText() {
+  const trimmed = state.note.text.trim();
+  if (!trimmed) {
+    return state.note.expanded
+      ? 'Add a plain-text note for this lesson line.'
+      : 'No note saved for this lesson yet.';
+  }
+
+  return state.note.expanded
+    ? 'This note is saved with the draft and lesson file.'
+    : `${trimmed.length} character${trimmed.length === 1 ? '' : 's'} saved.`;
+}
+
+function renderNotationNote() {
+  return `
+    <section class="notation-note" aria-label="Lesson note">
+      <div class="notation-note-head">
+        <div>
+          <h3 class="notation-note-title">Note</h3>
+          <p class="notation-note-copy">${escapeHtml(notationNoteSummaryText())}</p>
+        </div>
+        <button
+          type="button"
+          class="notation-nav-button notation-note-toggle"
+          data-action="toggle-note"
+          aria-expanded="${state.note.expanded ? 'true' : 'false'}"
+        >${state.note.expanded ? 'Hide note' : 'Show note'}</button>
+      </div>
+      ${state.note.expanded ? `
+        <div>
+          <label class="sr-only" for="notationNoteInput">Lesson note</label>
+          <textarea
+            id="notationNoteInput"
+            class="field-textarea notation-note-input"
+            placeholder="Add a note for this lesson..."
+            spellcheck="true"
+          >${escapeHtml(state.note.text)}</textarea>
+        </div>
+      ` : ''}
+    </section>
+  `;
+}
+
 function renderNotationPanel() {
   const hasHistory = countAnalysisMoveNodes() > 0;
   const currentNode = getCurrentAnalysisNode();
@@ -2076,12 +2516,20 @@ function renderNotationPanel() {
 
   if (!hasHistory) {
     dom.notationPanel.innerHTML = `
-      <p class="notation-empty">Play on the board to record the lesson tree.</p>
+      <div class="notation-content-stack">
+        <p class="notation-empty">Play on the board to record the lesson tree.</p>
+        ${renderNotationNote()}
+      </div>
     `;
     return;
   }
 
-  dom.notationPanel.innerHTML = `<div class="notation-tree">${renderNotationBranchSequence(state.analysis.rootId)}</div>`;
+  dom.notationPanel.innerHTML = `
+    <div class="notation-content-stack">
+      <div class="notation-tree">${renderNotationBranchSequence(state.analysis.rootId)}</div>
+      ${renderNotationNote()}
+    </div>
+  `;
 }
 
 function sideSelectorMarkup(keyPrefix, selectedValue, labels) {
@@ -2266,6 +2714,7 @@ function renderSetupPanel() {
 function renderAnalysisPanel() {
   const hasBoard = Boolean(state.analysis.game);
   const scoreLabel = Number.isFinite(state.engine.scoreValue) ? state.engine.evalLabel : 'Pending';
+  const annotateButtonClass = `action-button tonal ${state.annotations.enabled ? 'is-active' : ''}`.trim();
   dom.analysisPanel.innerHTML = `
     <article class="lesson-section">
       <div class="lesson-section-header">
@@ -2279,6 +2728,7 @@ function renderAnalysisPanel() {
           ${state.engine.loading ? 'Loading Stockfish...' : state.engine.stopping ? 'Stopping...' : state.engine.analyzing ? 'Stop analysis' : 'Analyze'}
         </button>
         <button type="button" class="action-button tonal" data-action="reset-analysis" ${hasBoard ? '' : 'disabled'}>Reset to setup</button>
+        <button type="button" class="${annotateButtonClass}" data-action="toggle-annotate" aria-pressed="${state.annotations.enabled ? 'true' : 'false'}">Annotate</button>
         <button type="button" class="action-button" data-action="flip-board">Flip board</button>
       </div>
 
@@ -2319,6 +2769,7 @@ function renderPgnPanel() {
   const lineSummary = totalPly
     ? `${totalPly} ply recorded in the lesson tree with ${branchPoints || 0} branch point${branchPoints === 1 ? '' : 's'}.`
     : 'No moves recorded yet. Use Analysis to start building the lesson tree.';
+  const annotateButtonClass = `action-button tonal ${state.annotations.enabled ? 'is-active' : ''}`.trim();
   dom.pgnPanel.innerHTML = `
     <article class="lesson-section">
       <div class="lesson-section-header">
@@ -2330,6 +2781,7 @@ function renderPgnPanel() {
       <div class="action-row action-row-compact">
         <button type="button" class="action-button tonal" data-action="navigate-start" ${hasBoard ? '' : 'disabled'}>Back to start</button>
         <button type="button" class="action-button tonal" data-action="reset-analysis" ${hasBoard ? '' : 'disabled'}>Reset to setup</button>
+        <button type="button" class="${annotateButtonClass}" data-action="toggle-annotate" aria-pressed="${state.annotations.enabled ? 'true' : 'false'}">Annotate</button>
         <button type="button" class="action-button" data-action="flip-board">Flip board</button>
       </div>
       <div class="stack-grid">
@@ -2399,12 +2851,22 @@ function renderAll() {
 }
 
 function handleBoardClick(event) {
+  if (Date.now() < state.annotations.suppressBoardClickUntil) {
+    event.preventDefault();
+    state.annotations.suppressBoardClickUntil = 0;
+    return;
+  }
   const squareEl = event.target.closest('.board-square');
   if (!squareEl) {
     return;
   }
   const square = squareEl.dataset.square;
   if (!square) {
+    return;
+  }
+
+  if (annotateModeActive()) {
+    event.preventDefault();
     return;
   }
 
@@ -2426,15 +2888,125 @@ function handleBoardClick(event) {
 }
 
 function handleBoardContextMenu(event) {
+  if (annotationsVisible()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
   if (state.activeTab !== TAB_SETUP) {
     return;
   }
+  const square = squareFromEventTarget(event.target);
+  if (!square) {
+    return;
+  }
+  event.preventDefault();
+  removeSetupPiece(square);
+}
+
+function handleBoardMouseDown(event) {
+  if (event.button !== 0 && event.button !== 2) {
+    return;
+  }
+  if (event.button === 2) {
+    if (!annotationsVisible()) {
+      return;
+    }
+  } else {
+    if (!annotationsVisible()) {
+      return;
+    }
+    if (hasAnyAnnotations()) {
+      event.preventDefault();
+      state.annotations.suppressBoardClickUntil = Date.now() + 400;
+      commitAnnotationRender(clearAllAnnotations());
+      return;
+    }
+    if (annotateModeActive()) {
+      event.preventDefault();
+      state.annotations.suppressBoardClickUntil = Date.now() + 400;
+      return;
+    }
+    return;
+  }
+
   const squareEl = event.target.closest('.board-square');
   if (!squareEl) {
     return;
   }
+  const square = squareEl.dataset.square || '';
+  if (!SQUARE_PATTERN.test(square)) {
+    return;
+  }
+
   event.preventDefault();
-  removeSetupPiece(squareEl.dataset.square);
+  state.annotations.gesture = {
+    active: true,
+    button: event.button,
+    mode: event.button === 2 && event.altKey ? 'arrow' : 'paint',
+    startSquare: square,
+    lastSquare: square,
+    dragged: false,
+  };
+  state.annotations.suppressContextMenu = event.button === 2;
+}
+
+function handleDocumentMouseMove(event) {
+  if (!state.annotations.gesture.active) {
+    return;
+  }
+  if (event.buttons === 0) {
+    cancelAnnotationGesture();
+    return;
+  }
+  applyAnnotationGestureSquare(squareFromClientPoint(event.clientX, event.clientY));
+}
+
+function handleDocumentMouseUp(event) {
+  const { gesture } = state.annotations;
+  if (!gesture.active) {
+    return;
+  }
+
+  const releaseSquare = squareFromClientPoint(event.clientX, event.clientY);
+  let changed = false;
+  if (gesture.button === 2) {
+    if (gesture.mode === 'paint' && !gesture.dragged && releaseSquare === gesture.startSquare) {
+      changed = toggleAnnotationCircle(gesture.startSquare);
+    } else if (gesture.mode === 'arrow' && releaseSquare && releaseSquare !== gesture.startSquare) {
+      changed = addAnnotationArrow(gesture.startSquare, releaseSquare);
+    }
+  }
+
+  const shouldRefreshOverlay = gesture.mode === 'arrow';
+  resetAnnotationGesture();
+  if (changed) {
+    commitAnnotationRender(true);
+  } else if (shouldRefreshOverlay) {
+    renderAnnotationOverlay();
+  }
+  if (gesture.button === 2) {
+    window.setTimeout(() => {
+      state.annotations.suppressContextMenu = false;
+    }, 250);
+  } else {
+    state.annotations.suppressContextMenu = false;
+  }
+}
+
+function handleDocumentContextMenu(event) {
+  const square = squareFromEventTarget(event.target);
+  if (annotationsVisible() && square) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  if (!state.annotations.suppressContextMenu) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  state.annotations.suppressContextMenu = false;
 }
 
 function extractDragPayload(event) {
@@ -2588,6 +3160,19 @@ function handleDocumentClick(event) {
     case 'toggle-analysis':
       void toggleAnalysis();
       break;
+    case 'toggle-annotate':
+      setAnnotateMode(!state.annotations.enabled);
+      break;
+    case 'toggle-note':
+      state.note.expanded = !state.note.expanded;
+      renderNotationPanel();
+      schedulePersist();
+      if (state.note.expanded) {
+        window.setTimeout(() => {
+          document.getElementById('notationNoteInput')?.focus();
+        }, 0);
+      }
+      break;
     case 'reset-analysis':
       resetAnalysisToSetup({ keepTab: true });
       renderAll();
@@ -2615,6 +3200,10 @@ function handleDocumentClick(event) {
       closeLessonActionsMenu();
       saveLessonFile();
       break;
+    case 'set-color-theme':
+      applyColorTheme(actionEl.dataset.value || 'light', { persist: true });
+      closeLessonActionsMenu({ restoreFocus: true });
+      break;
     case 'choose-promotion':
       choosePromotion(actionEl.dataset.promotion || '');
       break;
@@ -2630,6 +3219,11 @@ function handleDocumentInput(event) {
   if (event.target === dom.titleInput) {
     state.title = dom.titleInput.value;
     dom.boardTitleDisplay.textContent = state.title.trim() || 'Untitled position';
+    schedulePersist();
+    return;
+  }
+  if (event.target?.id === 'notationNoteInput') {
+    state.note.text = event.target.value;
     schedulePersist();
     return;
   }
@@ -2726,9 +3320,13 @@ function bindEvents() {
   document.addEventListener('input', handleDocumentInput);
   document.addEventListener('change', handleDocumentChange);
   document.addEventListener('keydown', handleDocumentKeydown);
+  document.addEventListener('mousemove', handleDocumentMouseMove);
+  document.addEventListener('mouseup', handleDocumentMouseUp);
+  document.addEventListener('contextmenu', handleDocumentContextMenu, true);
   document.addEventListener('dragstart', handlePaletteDragStart);
+  dom.boardGrid.addEventListener('mousedown', handleBoardMouseDown);
   dom.boardGrid.addEventListener('click', handleBoardClick);
-  dom.boardGrid.addEventListener('contextmenu', handleBoardContextMenu);
+  dom.boardGrid.addEventListener('contextmenu', handleBoardContextMenu, true);
   dom.boardGrid.addEventListener('dragstart', handleBoardDragStart);
   dom.boardGrid.addEventListener('dragover', handleBoardDragOver);
   dom.boardGrid.addEventListener('drop', handleBoardDrop);
@@ -2751,10 +3349,12 @@ function bindEvents() {
     }
   });
   window.addEventListener('resize', renderBoard);
+  window.addEventListener('blur', cancelAnnotationGesture);
   syncLessonFileStatus(state.lessonFileStatus);
   setLessonActionsMenuOpen(false);
 }
 
+initializeColorTheme();
 initializeDefaultSetup();
 hydrateDraft();
 syncAnalysisGameFromTree();
