@@ -7,8 +7,8 @@ const FILE_LABELS = Object.freeze(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
 const SQUARE_PATTERN = /^[a-h][1-8]$/;
 const BOARD_VIEWBOX_SIZE = 800;
 const BOARD_CELL_SIZE = BOARD_VIEWBOX_SIZE / 8;
-const ANNOTATION_ARROW_HEAD_LENGTH = 24;
-const ANNOTATION_ARROW_HEAD_WIDTH = 24;
+const ANNOTATION_ARROW_HEAD_LENGTH = 30;
+const ANNOTATION_ARROW_HEAD_WIDTH = 40;
 const TAB_SETUP = 'setup';
 const TAB_ANALYSIS = 'analysis';
 const TAB_PGN = 'pgn';
@@ -2069,19 +2069,31 @@ function buildAnnotationArrowMarkup(from, to, options = {}) {
 
   const unitX = deltaX / distance;
   const unitY = deltaY / distance;
-  const lineEndX = end.x - (unitX * ANNOTATION_ARROW_HEAD_LENGTH);
-  const lineEndY = end.y - (unitY * ANNOTATION_ARROW_HEAD_LENGTH);
-  const markerId = preview ? 'annotationArrowPreviewHead' : 'annotationArrowHead';
+  const headBaseX = end.x - (unitX * ANNOTATION_ARROW_HEAD_LENGTH);
+  const headBaseY = end.y - (unitY * ANNOTATION_ARROW_HEAD_LENGTH);
+  const perpendicularX = -unitY;
+  const perpendicularY = unitX;
+  const headHalfWidth = ANNOTATION_ARROW_HEAD_WIDTH / 2;
+  const leftX = headBaseX + (perpendicularX * headHalfWidth);
+  const leftY = headBaseY + (perpendicularY * headHalfWidth);
+  const rightX = headBaseX - (perpendicularX * headHalfWidth);
+  const rightY = headBaseY - (perpendicularY * headHalfWidth);
   const className = `board-annotation-arrow ${preview ? 'is-preview' : ''}`.trim();
+  const headClassName = `board-annotation-arrow-head ${preview ? 'is-preview' : ''}`.trim();
   return `
-    <line
-      class="${className}"
-      x1="${start.x}"
-      y1="${start.y}"
-      x2="${lineEndX}"
-      y2="${lineEndY}"
-      marker-end="url(#${markerId})"
-    ></line>
+    <g>
+      <line
+        class="${className}"
+        x1="${start.x}"
+        y1="${start.y}"
+        x2="${headBaseX}"
+        y2="${headBaseY}"
+      ></line>
+      <polygon
+        class="${headClassName}"
+        points="${end.x},${end.y} ${leftX},${leftY} ${rightX},${rightY}"
+      ></polygon>
+    </g>
   `;
 }
 
@@ -2122,14 +2134,6 @@ function renderAnnotationOverlay() {
   }
 
   dom.boardAnnotationOverlay.innerHTML = `
-    <defs>
-      <marker id="annotationArrowHead" viewBox="0 0 ${ANNOTATION_ARROW_HEAD_LENGTH} ${ANNOTATION_ARROW_HEAD_WIDTH}" markerWidth="${ANNOTATION_ARROW_HEAD_LENGTH}" markerHeight="${ANNOTATION_ARROW_HEAD_WIDTH}" refX="0" refY="${ANNOTATION_ARROW_HEAD_WIDTH / 2}" orient="auto" markerUnits="userSpaceOnUse">
-        <path class="board-annotation-arrow-head" d="M 0 0 L ${ANNOTATION_ARROW_HEAD_LENGTH} ${ANNOTATION_ARROW_HEAD_WIDTH / 2} L 0 ${ANNOTATION_ARROW_HEAD_WIDTH} z"></path>
-      </marker>
-      <marker id="annotationArrowPreviewHead" viewBox="0 0 ${ANNOTATION_ARROW_HEAD_LENGTH} ${ANNOTATION_ARROW_HEAD_WIDTH}" markerWidth="${ANNOTATION_ARROW_HEAD_LENGTH}" markerHeight="${ANNOTATION_ARROW_HEAD_WIDTH}" refX="0" refY="${ANNOTATION_ARROW_HEAD_WIDTH / 2}" orient="auto" markerUnits="userSpaceOnUse">
-        <path class="board-annotation-arrow-head is-preview" d="M 0 0 L ${ANNOTATION_ARROW_HEAD_LENGTH} ${ANNOTATION_ARROW_HEAD_WIDTH / 2} L 0 ${ANNOTATION_ARROW_HEAD_WIDTH} z"></path>
-      </marker>
-    </defs>
     ${savedArrows}
     ${previewMarkup}
   `;

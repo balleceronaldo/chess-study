@@ -639,8 +639,8 @@ code {
 .board-annotation-arrow {
   fill: none;
   stroke: var(--annotation-arrow);
-  stroke-width: 18;
-  stroke-linecap: butt;
+  stroke-width: 12;
+  stroke-linecap: round;
   stroke-linejoin: round;
 }
 
