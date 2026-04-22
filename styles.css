@@ -1408,7 +1408,6 @@ code {
 }
 
 .action-button:hover,
-.segmented-button:hover,
 .promotion-choice:hover,
 .move-button:hover,
 .icon-button:hover {
@@ -1454,6 +1453,7 @@ code {
 .segment-group {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
   gap: 0.35rem;
   padding: 0.22rem;
   border-radius: 0.95rem;
@@ -1462,10 +1462,27 @@ code {
 }
 
 .segmented-button {
-  min-height: 2.45rem;
-  padding: 0.55rem 0.75rem;
+  appearance: none;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 2.45rem;
+  padding: 0 0.75rem;
   border-radius: 0.78rem;
+  line-height: 1;
   font-weight: 700;
+  white-space: nowrap;
+}
+
+.segmented-button:hover,
+.segmented-button:focus-visible {
+  outline: none;
+  transform: none;
+  border-color: var(--segment-selected-border);
+  background: var(--segment-selected-bg);
+  color: var(--accent-strong);
+  box-shadow: 0 12px 18px var(--control-hover-shadow);
 }
 
 .segmented-button.is-selected {

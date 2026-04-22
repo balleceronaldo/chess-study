@@ -18,6 +18,19 @@ http://127.0.0.1:8000/
 
 Do not open `index.html` directly over `file://`. The Stockfish worker and asset loading are intended to run from a local server.
 
+## Update GitHub
+
+After making changes, review what will be committed and push to GitHub:
+
+```powershell
+git status
+git add README.md
+git commit -m "Update README"
+git push origin main
+```
+
+If you changed more than one file, replace `git add README.md` with the specific files you want to upload.
+
 ## Included assets
 
 - MPChess SVG piece set in `assets/pieces/mpchess/`
