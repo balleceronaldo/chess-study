@@ -142,6 +142,9 @@ const state = {
     resolveReady: null,
     rejectReady: null,
     searchFen: '',
+    pendingFen: '',
+    resumeFen: '',
+    resumeEligible: false,
     summary: 'Select Analyze to load Stockfish for this board.',
     pvLines: createEmptyEnginePvLines(),
     depth: null,
@@ -151,6 +154,7 @@ const state = {
     scoreValue: null,
     evalLabel: '0.00',
     bestMove: '',
+    evalRailVisible: true,
   },
   annotations: {
     enabled: false,
@@ -215,6 +219,70 @@ function createEmptyEnginePvLine(index) {
 
 function createEmptyEnginePvLines() {
   return Array.from({ length: ENGINE_MULTI_PV_COUNT }, (_, index) => createEmptyEnginePvLine(index + 1));
+}
+
+function clearEngineSearchData(options = {}) {
+  const { preserveEval = false } = options;
+  state.engine.pvLines = createEmptyEnginePvLines();
+  state.engine.depth = null;
+  state.engine.nodes = 0;
+  state.engine.nps = 0;
+  if (!preserveEval) {
+    state.engine.scoreType = '';
+    state.engine.scoreValue = null;
+    state.engine.evalLabel = '0.00';
+  }
+  state.engine.bestMove = '';
+}
+
+function postEngineSearchCommands(worker, fen, options = {}) {
+  const { freshGame = true } = options;
+  worker.postMessage(`setoption name MultiPV value ${ENGINE_MULTI_PV_COUNT}`);
+  if (freshGame) {
+    worker.postMessage('ucinewgame');
+  }
+  worker.postMessage(`position fen ${fen}`);
+  worker.postMessage('go infinite');
+}
+
+function startEngineSearch(worker, fen, options = {}) {
+  const {
+    preserveDisplay = false,
+    freshGame = true,
+    summary = 'Analyzing current board position...',
+  } = options;
+  if (!preserveDisplay) {
+    clearEngineSearchData();
+  }
+  state.engine.pendingFen = '';
+  state.engine.resumeFen = '';
+  state.engine.resumeEligible = false;
+  state.engine.searchFen = fen;
+  state.engine.analyzing = true;
+  state.engine.stopping = false;
+  state.engine.summary = summary;
+  renderNotationPanel();
+  renderAnalysisPanel();
+  renderBoard();
+  renderHeaderMeta();
+  postEngineSearchCommands(worker, fen, { freshGame });
+}
+
+function queueEngineSearchForFen(fen) {
+  if (!fen || !state.engine.worker || !state.engine.ready || !state.engine.analyzing || state.engine.stopping) {
+    return;
+  }
+  state.engine.pendingFen = fen;
+  state.engine.searchFen = '';
+  state.engine.resumeFen = '';
+  state.engine.resumeEligible = false;
+  clearEngineSearchData({ preserveEval: true });
+  state.engine.summary = 'Updating analysis for the current board position...';
+  renderNotationPanel();
+  renderAnalysisPanel();
+  renderBoard();
+  renderHeaderMeta();
+  state.engine.worker.postMessage('stop');
 }
 
 function normalizeAnnotationSquares(value) {
@@ -410,6 +478,35 @@ function syncLessonFileStatus(message) {
   state.lessonFileStatus = String(message || '');
   if (dom.lessonFileStatus) {
     dom.lessonFileStatus.textContent = state.lessonFileStatus;
+  }
+}
+
+async function copyCurrentFenToClipboard() {
+  const fen = currentBoardFenLabel();
+  closeLessonActionsMenu({ restoreFocus: true });
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(fen);
+    } else {
+      const textArea = document.createElement('textarea');
+      textArea.value = fen;
+      textArea.setAttribute('readonly', '');
+      textArea.style.position = 'fixed';
+      textArea.style.top = '-9999px';
+      textArea.style.opacity = '0';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textArea);
+      if (!copied) {
+        throw new Error('Clipboard copy command was rejected.');
+      }
+    }
+    syncLessonFileStatus('Current board FEN copied.');
+  } catch (error) {
+    console.warn('Unable to copy current FEN.', error);
+    syncLessonFileStatus('Unable to copy FEN in this browser.');
   }
 }
 
@@ -1434,15 +1531,12 @@ function resetAnalysisOutput(options = {}) {
   state.engine.analyzing = false;
   state.engine.stopping = false;
   state.engine.searchFen = '';
+  state.engine.pendingFen = '';
+  state.engine.resumeFen = '';
+  state.engine.resumeEligible = false;
   state.engine.summary = summary;
-  state.engine.pvLines = createEmptyEnginePvLines();
-  state.engine.depth = null;
-  state.engine.nodes = 0;
-  state.engine.nps = 0;
-  state.engine.scoreType = '';
-  state.engine.scoreValue = null;
-  state.engine.evalLabel = '0.00';
-  state.engine.bestMove = '';
+  state.engine.evalRailVisible = true;
+  clearEngineSearchData();
   if (!keepReady) {
     state.engine.ready = false;
   }
@@ -1458,7 +1552,8 @@ function allocateAnalysisNodeId() {
   return candidate;
 }
 
-function syncAnalysisGameFromTree() {
+function syncAnalysisGameFromTree(options = {}) {
+  const { resetEngine = true } = options;
   clearAnalysisSelection();
   state.analysis.pendingPromotion = null;
   if (!canAnalyzeCurrentSetup()) {
@@ -1466,7 +1561,9 @@ function syncAnalysisGameFromTree() {
     state.analysis.currentFen = state.setupFen;
     state.analysis.lastMoveSquares = [];
     state.analysis.boardMessage = 'Fix the setup to enable legal-move analysis.';
-    resetAnalysisOutput({ summary: defaultAnalysisSummary() });
+    if (resetEngine) {
+      resetAnalysisOutput({ summary: defaultAnalysisSummary() });
+    }
     return;
   }
 
@@ -1498,7 +1595,9 @@ function syncAnalysisGameFromTree() {
     state.analysis.lastMoveSquares = [];
     state.analysis.boardMessage = 'Select a piece belonging to the side to move.';
   }
-  resetAnalysisOutput({ summary: defaultAnalysisSummary() });
+  if (resetEngine) {
+    resetAnalysisOutput({ summary: defaultAnalysisSummary() });
+  }
 }
 
 function jumpToAnalysisNode(nodeId) {
@@ -1571,6 +1670,22 @@ function formatScoreLabel(scoreType, scoreValue) {
   }
   const pawns = (numeric / 100).toFixed(2);
   return numeric >= 0 ? `+${pawns}` : pawns;
+}
+
+function normalizeScoreToWhitePerspective(scoreType, scoreValue, fen) {
+  const numeric = Number(scoreValue);
+  if (!Number.isFinite(numeric)) {
+    return {
+      scoreType,
+      scoreValue: null,
+    };
+  }
+  const parsed = parseFenLike(fen);
+  const multiplier = parsed.ok && parsed.meta.activeColor === 'b' ? -1 : 1;
+  return {
+    scoreType,
+    scoreValue: numeric * multiplier,
+  };
 }
 
 function scoreToWhiteFraction(scoreType, scoreValue) {
@@ -1765,6 +1880,9 @@ function handleWorkerMessage(event) {
     if (!info || info.multipv < 1 || info.multipv > ENGINE_MULTI_PV_COUNT) {
       return;
     }
+    const normalizedScore = info.scoreType
+      ? normalizeScoreToWhitePerspective(info.scoreType, info.scoreValue, state.engine.searchFen)
+      : { scoreType: '', scoreValue: null };
     state.engine.depth = Number.isFinite(info.depth) ? info.depth : state.engine.depth;
     state.engine.nps = Number.isFinite(info.nps) ? info.nps : state.engine.nps;
     state.engine.nodes = Number.isFinite(info.nodes) ? info.nodes : state.engine.nodes;
@@ -1772,18 +1890,18 @@ function handleWorkerMessage(event) {
     const existingLine = state.engine.pvLines[pvIndex] || createEmptyEnginePvLine(info.multipv);
     const sanLine = uciMovesToSan(state.engine.searchFen, info.pv);
     const nextEvalLabel = info.scoreType
-      ? formatScoreLabel(info.scoreType, info.scoreValue)
+      ? formatScoreLabel(normalizedScore.scoreType, normalizedScore.scoreValue)
       : existingLine.evalLabel;
     state.engine.pvLines[pvIndex] = {
       index: info.multipv,
       line: sanLine.length ? sanLine.join(' ') : '',
-      scoreType: info.scoreType || existingLine.scoreType,
-      scoreValue: Number.isFinite(info.scoreValue) ? info.scoreValue : existingLine.scoreValue,
+      scoreType: normalizedScore.scoreType || existingLine.scoreType,
+      scoreValue: Number.isFinite(normalizedScore.scoreValue) ? normalizedScore.scoreValue : existingLine.scoreValue,
       evalLabel: nextEvalLabel,
     };
     if (info.multipv === 1 && info.scoreType) {
-      state.engine.scoreType = info.scoreType;
-      state.engine.scoreValue = info.scoreValue;
+      state.engine.scoreType = normalizedScore.scoreType;
+      state.engine.scoreValue = normalizedScore.scoreValue;
       state.engine.evalLabel = nextEvalLabel;
     }
     const summaryBits = ['Analyzing current board'];
@@ -1802,16 +1920,31 @@ function handleWorkerMessage(event) {
     return;
   }
   if (line.startsWith('bestmove ')) {
+    if (state.engine.pendingFen && state.engine.worker) {
+      startEngineSearch(state.engine.worker, state.engine.pendingFen, {
+        preserveDisplay: true,
+        freshGame: true,
+      });
+      return;
+    }
+    if (!state.engine.searchFen && !state.engine.stopping && !state.engine.analyzing) {
+      return;
+    }
+    const stoppedFen = state.engine.searchFen;
     const tokens = line.split(/\s+/);
     state.engine.analyzing = false;
     state.engine.stopping = false;
+    state.engine.pendingFen = '';
     state.engine.bestMove = tokens[1] || '';
     if (state.engine.bestMove && state.engine.bestMove !== '(none)') {
-      const san = uciMovesToSan(state.engine.searchFen, [state.engine.bestMove])[0] || state.engine.bestMove;
+      const san = uciMovesToSan(stoppedFen, [state.engine.bestMove])[0] || state.engine.bestMove;
       state.engine.summary = `Search stopped. Best move: ${san}.`;
     } else {
       state.engine.summary = 'Search finished. No legal moves are available in this position.';
     }
+    state.engine.resumeFen = stoppedFen;
+    state.engine.resumeEligible = Boolean(stoppedFen && state.engine.ready && state.engine.worker);
+    state.engine.searchFen = '';
     renderNotationPanel();
     renderAnalysisPanel();
     renderHeaderMeta();
@@ -1862,17 +1995,21 @@ async function ensureStockfishReady() {
   return state.engine.loadingPromise;
 }
 
-function stopAnalysisSearch({ clearSummary = false } = {}) {
+function stopAnalysisSearch({ clearSummary = false, hideEvalRail = clearSummary } = {}) {
   if (state.engine.worker && state.engine.searchFen) {
     state.engine.worker.postMessage('stop');
   }
   state.engine.analyzing = false;
   state.engine.stopping = false;
   state.engine.searchFen = '';
+  state.engine.pendingFen = '';
   if (clearSummary) {
     state.engine.summary = defaultAnalysisSummary();
-    state.engine.pvLines = createEmptyEnginePvLines();
+    state.engine.resumeFen = '';
+    state.engine.resumeEligible = false;
+    clearEngineSearchData();
   }
+  state.engine.evalRailVisible = true;
 }
 
 async function toggleAnalysis() {
@@ -1885,6 +2022,7 @@ async function toggleAnalysis() {
   }
   if (state.engine.analyzing) {
     state.engine.stopping = true;
+    state.engine.pendingFen = '';
     state.engine.summary = 'Stopping Stockfish search...';
     renderNotationPanel();
     renderAnalysisPanel();
@@ -1895,25 +2033,51 @@ async function toggleAnalysis() {
     return;
   }
   try {
-    const worker = await ensureStockfishReady();
-    stopAnalysisSearch({ clearSummary: false });
-    state.engine.searchFen = state.analysis.currentFen;
-    state.engine.analyzing = true;
-    state.engine.stopping = false;
-    state.engine.summary = 'Analyzing current board position...';
-    state.engine.pvLines = createEmptyEnginePvLines();
+    state.engine.evalRailVisible = true;
+    const currentFen = state.analysis.currentFen;
+    const requestedWarmRestart = Boolean(
+      state.engine.resumeEligible
+      && state.engine.worker
+      && state.engine.ready
+      && state.engine.resumeFen === currentFen,
+    );
+    if (requestedWarmRestart) {
+      state.engine.summary = 'Continuing analysis from the current board position...';
+    } else {
+      clearEngineSearchData();
+      state.engine.summary = state.engine.ready ? 'Preparing Stockfish search...' : 'Loading Stockfish engine...';
+    }
     renderNotationPanel();
+    renderBoard();
     renderAnalysisPanel();
-    renderHeaderMeta();
-    worker.postMessage(`setoption name MultiPV value ${ENGINE_MULTI_PV_COUNT}`);
-    worker.postMessage('ucinewgame');
-    worker.postMessage(`position fen ${state.analysis.currentFen}`);
-    worker.postMessage('go infinite');
+    const worker = await ensureStockfishReady();
+    const canWarmRestart = Boolean(
+      requestedWarmRestart
+      && worker === state.engine.worker
+      && state.engine.resumeEligible
+      && state.engine.resumeFen === currentFen,
+    );
+    startEngineSearch(worker, currentFen, {
+      preserveDisplay: canWarmRestart,
+      freshGame: !canWarmRestart,
+      summary: canWarmRestart
+        ? 'Continuing analysis from the current board position...'
+        : 'Analyzing current board position...',
+    });
   } catch (error) {
     state.engine.ready = false;
+    state.engine.analyzing = false;
+    state.engine.stopping = false;
+    state.engine.searchFen = '';
+    state.engine.pendingFen = '';
+    state.engine.resumeFen = '';
+    state.engine.resumeEligible = false;
+    state.engine.evalRailVisible = true;
+    clearEngineSearchData();
     state.engine.summary = error?.message || 'Failed to start Stockfish.';
     renderNotationPanel();
     renderAnalysisPanel();
+    renderBoard();
     renderHeaderMeta();
   }
 }
@@ -1941,6 +2105,7 @@ function applyAnalysisMove(move) {
   if (!state.analysis.game) {
     return;
   }
+  const shouldKeepAnalysisLive = (state.engine.analyzing && !state.engine.stopping) || state.engine.loading;
   const currentNode = getCurrentAnalysisNode();
   if (!currentNode) {
     return;
@@ -1975,8 +2140,13 @@ function applyAnalysisMove(move) {
     state.analysis.currentNodeId = nodeId;
   }
 
-  syncAnalysisGameFromTree();
-  state.analysis.boardMessage = `Current move: ${applied.san}. Analyze the current board position for fresh evaluation.`;
+  syncAnalysisGameFromTree({ resetEngine: !shouldKeepAnalysisLive });
+  state.analysis.boardMessage = shouldKeepAnalysisLive
+    ? `Current move: ${applied.san}. Stockfish is following the new board position.`
+    : `Current move: ${applied.san}. Analyze the current board position for fresh evaluation.`;
+  if (state.engine.analyzing && !state.engine.stopping) {
+    queueEngineSearchForFen(state.analysis.currentFen);
+  }
   schedulePersist();
   renderAll();
 }
@@ -2411,23 +2581,17 @@ function renderBoard() {
   renderAnnotationOverlay();
   syncBoardSize();
 
-  const hasEval = state.activeTab !== TAB_SETUP && Number.isFinite(state.engine.scoreValue);
-  dom.evalBadgeWrap.classList.toggle('is-hidden', !hasEval);
-  dom.evalBarWrap.classList.toggle('is-hidden', !hasEval);
-  if (hasEval) {
-    dom.evalBadge.textContent = state.engine.evalLabel;
-    const whiteFraction = scoreToWhiteFraction(state.engine.scoreType, state.engine.scoreValue);
-    if (window.innerWidth <= 760) {
-      dom.evalBarWhite.style.width = `${(whiteFraction * 100).toFixed(1)}%`;
-      dom.evalBarWhite.style.height = '100%';
-    } else {
-      dom.evalBarWhite.style.height = `${(whiteFraction * 100).toFixed(1)}%`;
-      dom.evalBarWhite.style.width = '100%';
-    }
-  } else {
-    dom.evalBarWhite.style.height = '50%';
-    dom.evalBarWhite.style.width = '100%';
-  }
+  dom.evalBadgeWrap.classList.remove('is-hidden');
+  dom.evalBarWrap.classList.remove('is-hidden');
+  dom.evalBadgeWrap.setAttribute('aria-hidden', 'false');
+  dom.evalBarWrap.setAttribute('aria-hidden', 'false');
+  dom.evalBarWrap.dataset.orientation = state.boardOrientation;
+  dom.evalBadge.textContent = state.engine.evalLabel || '0.00';
+  const whiteFraction = Number.isFinite(state.engine.scoreValue)
+    ? scoreToWhiteFraction(state.engine.scoreType, state.engine.scoreValue)
+    : 0.5;
+  dom.evalBarWhite.style.height = `${(whiteFraction * 100).toFixed(1)}%`;
+  dom.evalBarWhite.style.width = '100%';
 }
 
 function syncBoardSize() {
@@ -2436,6 +2600,7 @@ function syncBoardSize() {
   }
 
   dom.rootElement.style.setProperty('--board-side-gap', '0px');
+  dom.boardColumn.style.removeProperty('--board-size');
   dom.boardFrame.style.removeProperty('--board-size');
 
   const columnWidth = dom.boardColumn.clientWidth;
@@ -2450,7 +2615,7 @@ function syncBoardSize() {
   const boardSize = Math.floor(Math.min(columnWidth, availableHeight, maxBoardSize));
 
   if (boardSize > 0) {
-    dom.boardFrame.style.setProperty('--board-size', `${boardSize}px`);
+    dom.boardColumn.style.setProperty('--board-size', `${boardSize}px`);
   }
 
   const boardWidth = dom.boardFrame.offsetWidth;
@@ -2867,7 +3032,7 @@ function renderSetupPanel() {
 
 function renderAnalysisPanel() {
   const hasBoard = Boolean(state.analysis.game);
-  const scoreLabel = Number.isFinite(state.engine.scoreValue) ? state.engine.evalLabel : 'Pending';
+  const scoreLabel = state.engine.evalLabel || '0.00';
   const annotateButtonClass = `action-button tonal ${state.annotations.enabled ? 'is-active' : ''}`.trim();
   const analyzeButtonLabel = currentAnalyzeButtonLabel();
   const analysisButtonDisabled = !hasBoard || state.engine.loading || state.engine.stopping;
@@ -3386,6 +3551,9 @@ function handleDocumentClick(event) {
     case 'save-lesson':
       closeLessonActionsMenu();
       saveLessonFile();
+      break;
+    case 'copy-fen':
+      void copyCurrentFenToClipboard();
       break;
     case 'set-color-theme':
       applyColorTheme(actionEl.dataset.value || 'light', { persist: true });

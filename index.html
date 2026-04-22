@@ -37,10 +37,6 @@
             </div>
           </div>
 
-          <div id="evalBadgeWrap" class="eval-badge-wrap is-hidden" aria-hidden="true">
-            <span id="evalBadge" class="eval-badge">+0.00</span>
-          </div>
-
           <div class="board-block">
             <div class="board-column">
               <div class="board-frame">
@@ -55,15 +51,11 @@
                   ></svg>
                 </div>
               </div>
-            </div>
-            <div id="evalBarWrap" class="eval-bar-wrap is-hidden" aria-hidden="true">
-              <div class="eval-bar-track">
-                <div id="evalBarWhite" class="eval-bar-white"></div>
-                <div class="eval-bar-divider"></div>
-              </div>
-              <div class="eval-bar-labels">
-                <span>W</span>
-                <span>B</span>
+              <div id="evalBarWrap" class="eval-bar-wrap is-hidden" aria-hidden="true">
+                <div class="eval-bar-track">
+                  <div id="evalBarWhite" class="eval-bar-white"></div>
+                  <div class="eval-bar-divider"></div>
+                </div>
               </div>
             </div>
           </div>
@@ -109,6 +101,9 @@
               class="header-analyze-button action-button primary"
               data-action="toggle-analysis"
             >Analyze</button>
+            <div id="evalBadgeWrap" class="eval-badge-wrap is-hidden" aria-hidden="true">
+              <span id="evalBadge" class="eval-badge">+0.00</span>
+            </div>
             <div class="lesson-overflow">
               <button
                 id="lessonActionsButton"
@@ -129,6 +124,7 @@
               <div id="lessonActionsMenu" class="lesson-overflow-menu" role="menu" aria-labelledby="lessonActionsButton" hidden>
                 <button id="openLessonButton" type="button" class="lesson-overflow-item" data-action="open-lesson" role="menuitem">Open lesson</button>
                 <button id="saveLessonButton" type="button" class="lesson-overflow-item" data-action="save-lesson" role="menuitem">Save lesson</button>
+                <button id="copyFenButton" type="button" class="lesson-overflow-item" data-action="copy-fen" role="menuitem">Copy FEN</button>
                 <button id="toggleNoteMenuButton" type="button" class="lesson-overflow-item" data-action="toggle-note" role="menuitem">Show note</button>
                 <button id="toggleToolsMenuButton" type="button" class="lesson-overflow-item" data-action="toggle-tools" role="menuitem">Show tools</button>
                 <button id="togglePvLinesMenuButton" type="button" class="lesson-overflow-item" data-action="toggle-pv-lines" role="menuitem">Hide PV lines</button>
