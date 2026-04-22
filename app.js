@@ -9,6 +9,7 @@ const BOARD_VIEWBOX_SIZE = 800;
 const BOARD_CELL_SIZE = BOARD_VIEWBOX_SIZE / 8;
 const ANNOTATION_ARROW_HEAD_LENGTH = 30;
 const ANNOTATION_ARROW_HEAD_WIDTH = 40;
+const ENGINE_MULTI_PV_COUNT = 3;
 const TAB_SETUP = 'setup';
 const TAB_ANALYSIS = 'analysis';
 const TAB_PGN = 'pgn';
@@ -68,12 +69,14 @@ const dom = {
   setupFenCode: document.getElementById('setupFenCode'),
   engineReadyLabel: document.getElementById('engineReadyLabel'),
   titleInput: document.getElementById('titleInput'),
+  headerAnalyzeButton: document.getElementById('headerAnalyzeButton'),
   lessonActionsButton: document.getElementById('lessonActionsButton'),
   lessonActionsMenu: document.getElementById('lessonActionsMenu'),
   openLessonButton: document.getElementById('openLessonButton'),
   saveLessonButton: document.getElementById('saveLessonButton'),
   toggleNoteMenuButton: document.getElementById('toggleNoteMenuButton'),
   toggleToolsMenuButton: document.getElementById('toggleToolsMenuButton'),
+  togglePvLinesMenuButton: document.getElementById('togglePvLinesMenuButton'),
   colorThemeItems: Array.from(document.querySelectorAll('[data-action="set-color-theme"]')),
   lessonFileInput: document.getElementById('lessonFileInput'),
   lessonFileStatus: document.getElementById('lessonFileStatus'),
@@ -126,6 +129,7 @@ const state = {
     expanded: false,
   },
   toolsExpanded: false,
+  pvLinesVisible: true,
   lessonFileStatus: '',
   engine: {
     worker: null,
@@ -139,7 +143,7 @@ const state = {
     rejectReady: null,
     searchFen: '',
     summary: 'Select Analyze to load Stockfish for this board.',
-    pv: '',
+    pvLines: createEmptyEnginePvLines(),
     depth: null,
     nodes: 0,
     nps: 0,
@@ -197,6 +201,20 @@ function createEmptyAnnotationGestureState() {
     lastSquare: '',
     dragged: false,
   };
+}
+
+function createEmptyEnginePvLine(index) {
+  return {
+    index,
+    line: '',
+    scoreType: '',
+    scoreValue: null,
+    evalLabel: '',
+  };
+}
+
+function createEmptyEnginePvLines() {
+  return Array.from({ length: ENGINE_MULTI_PV_COUNT }, (_, index) => createEmptyEnginePvLine(index + 1));
 }
 
 function normalizeAnnotationSquares(value) {
@@ -431,6 +449,9 @@ function syncLessonVisibilityMenuState() {
   if (dom.toggleToolsMenuButton) {
     dom.toggleToolsMenuButton.textContent = state.toolsExpanded ? 'Hide tools' : 'Show tools';
   }
+  if (dom.togglePvLinesMenuButton) {
+    dom.togglePvLinesMenuButton.textContent = state.pvLinesVisible ? 'Hide PV lines' : 'Show PV lines';
+  }
 }
 
 function applyColorTheme(theme, options = {}) {
@@ -490,6 +511,7 @@ function buildLessonPayload() {
     activeTab: state.activeTab,
     advancedOpen: state.setup.advancedOpen,
     toolsExpanded: state.toolsExpanded,
+    pvLinesVisible: state.pvLinesVisible,
     currentNodeId: state.analysis.currentNodeId,
     rootId: state.analysis.rootId,
     nodes: cloneAnalysisNodes(state.analysis.nodes),
@@ -1121,6 +1143,7 @@ function validateAndNormalizeLessonPayload(payload) {
     activeTab: [TAB_SETUP, TAB_ANALYSIS, TAB_PGN].includes(payload.activeTab) ? payload.activeTab : TAB_PGN,
     advancedOpen: Boolean(payload.advancedOpen),
     toolsExpanded: Boolean(payload.toolsExpanded),
+    pvLinesVisible: payload.pvLinesVisible !== false,
     setupFen: normalizedSetup.setupFen,
     setup: normalizedSetup.setup,
     analysis: validateAndNormalizeLessonNodes(payload.nodes, rootId, currentNodeId, normalizedSetup.setupFen),
@@ -1140,6 +1163,7 @@ function applyLessonState(lessonState) {
   state.activeTab = lessonState.activeTab;
   state.setup.advancedOpen = lessonState.advancedOpen;
   state.toolsExpanded = Boolean(lessonState.toolsExpanded);
+  state.pvLinesVisible = lessonState.pvLinesVisible !== false;
   state.setup.armedPiece = null;
   state.setup.pieces = lessonState.setup.pieces;
   state.setup.meta = lessonState.setup.meta;
@@ -1173,6 +1197,7 @@ function hydrateDraft() {
     const activeTab = [TAB_SETUP, TAB_ANALYSIS, TAB_PGN].includes(draft?.activeTab) ? draft.activeTab : TAB_PGN;
     const advancedOpen = Boolean(draft?.advancedOpen);
     const toolsExpanded = Boolean(draft?.toolsExpanded);
+    const pvLinesVisible = draft?.pvLinesVisible !== false;
     const normalizedSetup = normalizeSetupFenForLesson(typeof draft?.setupFen === 'string' ? draft.setupFen : DEFAULT_POSITION);
     const analysisHistory = Array.isArray(draft?.analysisHistory)
       ? draft.analysisHistory
@@ -1194,6 +1219,7 @@ function hydrateDraft() {
       activeTab,
       advancedOpen,
       toolsExpanded,
+      pvLinesVisible,
       setupFen: normalizedSetup.setupFen,
       setup: normalizedSetup.setup,
       analysis: buildLegacyAnalysisTree(analysisHistory, analysisCursor, normalizedSetup.setupFen),
@@ -1409,7 +1435,7 @@ function resetAnalysisOutput(options = {}) {
   state.engine.stopping = false;
   state.engine.searchFen = '';
   state.engine.summary = summary;
-  state.engine.pv = '';
+  state.engine.pvLines = createEmptyEnginePvLines();
   state.engine.depth = null;
   state.engine.nodes = 0;
   state.engine.nps = 0;
@@ -1572,6 +1598,50 @@ function formatNodeCount(value) {
   return `${Math.round(numeric)}`;
 }
 
+function currentAnalyzeButtonLabel() {
+  if (state.engine.loading) {
+    return 'Loading...';
+  }
+  if (state.engine.stopping) {
+    return 'Stopping...';
+  }
+  return state.engine.analyzing ? 'Stop' : 'Analyze';
+}
+
+function currentPvPlaceholderText() {
+  if (state.engine.loading) {
+    return 'Loading engine line...';
+  }
+  if (state.engine.stopping) {
+    return 'Stopping analysis...';
+  }
+  if (state.engine.analyzing) {
+    return 'Waiting for engine line...';
+  }
+  return 'No principal variation yet.';
+}
+
+function hasVisibleEnginePvLines() {
+  return state.engine.pvLines.some((entry) => entry.line);
+}
+
+function renderPvLineListMarkup() {
+  const emptyText = currentPvPlaceholderText();
+  return `
+    <div class="pv-line-list">
+      ${state.engine.pvLines.map((entry) => `
+        <div class="pv-line ${entry.line ? '' : 'is-empty'}">
+          <div class="pv-line-head">
+            <span class="pv-line-index">PV ${entry.index}</span>
+            <span class="pv-line-score">${escapeHtml(entry.evalLabel || 'Pending')}</span>
+          </div>
+          <div class="pv-line-text">${escapeHtml(entry.line || emptyText)}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
 function parseInfoLine(line) {
   const tokens = String(line ?? '').trim().split(/\s+/);
   if (!tokens.length || tokens[0] !== 'info') {
@@ -1692,19 +1762,30 @@ function handleWorkerMessage(event) {
   }
   if (line.startsWith('info ') && state.engine.searchFen) {
     const info = parseInfoLine(line);
-    if (!info || info.multipv !== 1) {
+    if (!info || info.multipv < 1 || info.multipv > ENGINE_MULTI_PV_COUNT) {
       return;
     }
     state.engine.depth = Number.isFinite(info.depth) ? info.depth : state.engine.depth;
     state.engine.nps = Number.isFinite(info.nps) ? info.nps : state.engine.nps;
     state.engine.nodes = Number.isFinite(info.nodes) ? info.nodes : state.engine.nodes;
-    if (info.scoreType) {
+    const pvIndex = info.multipv - 1;
+    const existingLine = state.engine.pvLines[pvIndex] || createEmptyEnginePvLine(info.multipv);
+    const sanLine = uciMovesToSan(state.engine.searchFen, info.pv);
+    const nextEvalLabel = info.scoreType
+      ? formatScoreLabel(info.scoreType, info.scoreValue)
+      : existingLine.evalLabel;
+    state.engine.pvLines[pvIndex] = {
+      index: info.multipv,
+      line: sanLine.length ? sanLine.join(' ') : '',
+      scoreType: info.scoreType || existingLine.scoreType,
+      scoreValue: Number.isFinite(info.scoreValue) ? info.scoreValue : existingLine.scoreValue,
+      evalLabel: nextEvalLabel,
+    };
+    if (info.multipv === 1 && info.scoreType) {
       state.engine.scoreType = info.scoreType;
       state.engine.scoreValue = info.scoreValue;
-      state.engine.evalLabel = formatScoreLabel(info.scoreType, info.scoreValue);
+      state.engine.evalLabel = nextEvalLabel;
     }
-    const sanLine = uciMovesToSan(state.engine.searchFen, info.pv);
-    state.engine.pv = sanLine.length ? sanLine.join(' ') : '';
     const summaryBits = ['Analyzing current board'];
     if (Number.isFinite(state.engine.depth)) {
       summaryBits.push(`Depth ${state.engine.depth}`);
@@ -1714,6 +1795,7 @@ function handleWorkerMessage(event) {
       summaryBits.push(`${formatNodeCount(state.engine.nps)} nps`);
     }
     state.engine.summary = summaryBits.join(' | ');
+    renderNotationPanel();
     renderAnalysisPanel();
     renderBoard();
     renderHeaderMeta();
@@ -1730,6 +1812,7 @@ function handleWorkerMessage(event) {
     } else {
       state.engine.summary = 'Search finished. No legal moves are available in this position.';
     }
+    renderNotationPanel();
     renderAnalysisPanel();
     renderHeaderMeta();
     return;
@@ -1745,6 +1828,7 @@ async function ensureStockfishReady() {
   }
   state.engine.loading = true;
   state.engine.summary = 'Loading Stockfish engine...';
+  renderNotationPanel();
   renderAnalysisPanel();
   renderHeaderMeta();
   state.engine.loadingPromise = new Promise((resolve, reject) => {
@@ -1787,13 +1871,14 @@ function stopAnalysisSearch({ clearSummary = false } = {}) {
   state.engine.searchFen = '';
   if (clearSummary) {
     state.engine.summary = defaultAnalysisSummary();
-    state.engine.pv = '';
+    state.engine.pvLines = createEmptyEnginePvLines();
   }
 }
 
 async function toggleAnalysis() {
   if (!state.analysis.game) {
     state.engine.summary = defaultAnalysisSummary();
+    renderNotationPanel();
     renderAnalysisPanel();
     renderHeaderMeta();
     return;
@@ -1801,6 +1886,7 @@ async function toggleAnalysis() {
   if (state.engine.analyzing) {
     state.engine.stopping = true;
     state.engine.summary = 'Stopping Stockfish search...';
+    renderNotationPanel();
     renderAnalysisPanel();
     renderHeaderMeta();
     if (state.engine.worker) {
@@ -1815,16 +1901,18 @@ async function toggleAnalysis() {
     state.engine.analyzing = true;
     state.engine.stopping = false;
     state.engine.summary = 'Analyzing current board position...';
-    state.engine.pv = '';
+    state.engine.pvLines = createEmptyEnginePvLines();
+    renderNotationPanel();
     renderAnalysisPanel();
     renderHeaderMeta();
-    worker.postMessage('setoption name MultiPV value 1');
+    worker.postMessage(`setoption name MultiPV value ${ENGINE_MULTI_PV_COUNT}`);
     worker.postMessage('ucinewgame');
     worker.postMessage(`position fen ${state.analysis.currentFen}`);
     worker.postMessage('go infinite');
   } catch (error) {
     state.engine.ready = false;
     state.engine.summary = error?.message || 'Failed to start Stockfish.';
+    renderNotationPanel();
     renderAnalysisPanel();
     renderHeaderMeta();
   }
@@ -2396,6 +2484,13 @@ function renderHeaderMeta() {
   dom.currentFenCode.textContent = currentBoardFenLabel();
   dom.setupFenCode.textContent = state.setupFen;
   dom.engineReadyLabel.textContent = engineLabel;
+  if (dom.headerAnalyzeButton) {
+    dom.headerAnalyzeButton.textContent = currentAnalyzeButtonLabel();
+    dom.headerAnalyzeButton.disabled = !state.analysis.game || state.engine.loading || state.engine.stopping;
+    dom.headerAnalyzeButton.classList.toggle('primary', !state.engine.analyzing && !state.engine.stopping);
+    dom.headerAnalyzeButton.classList.toggle('danger', state.engine.analyzing || state.engine.stopping);
+    dom.headerAnalyzeButton.setAttribute('aria-pressed', state.engine.analyzing ? 'true' : 'false');
+  }
   if (document.activeElement !== dom.titleInput) {
     dom.titleInput.value = state.title;
   }
@@ -2539,6 +2634,26 @@ function renderNotationNote() {
   `;
 }
 
+function renderNotationPvBlock() {
+  if (!state.pvLinesVisible) {
+    return '';
+  }
+  if (!state.engine.loading && !state.engine.stopping && !state.engine.analyzing && !hasVisibleEnginePvLines()) {
+    return '';
+  }
+  return `
+    <section class="notation-pv" aria-label="Engine lines">
+      <div class="notation-pv-head">
+        <div>
+          <h3 class="notation-pv-title">Engine lines</h3>
+          <p class="notation-pv-copy">Top 3 candidate lines from the current board position.</p>
+        </div>
+      </div>
+      ${renderPvLineListMarkup()}
+    </section>
+  `;
+}
+
 function renderNotationPanel() {
   const hasHistory = countAnalysisMoveNodes() > 0;
   const currentNode = getCurrentAnalysisNode();
@@ -2555,6 +2670,7 @@ function renderNotationPanel() {
     dom.notationPanel.innerHTML = `
       <div class="notation-content-stack">
         <p class="notation-empty">Play on the board to record the lesson tree.</p>
+        ${renderNotationPvBlock()}
         ${renderNotationNote()}
       </div>
     `;
@@ -2564,6 +2680,7 @@ function renderNotationPanel() {
   dom.notationPanel.innerHTML = `
     <div class="notation-content-stack">
       <div class="notation-tree">${renderNotationBranchSequence(state.analysis.rootId)}</div>
+      ${renderNotationPvBlock()}
       ${renderNotationNote()}
     </div>
   `;
@@ -2752,6 +2869,10 @@ function renderAnalysisPanel() {
   const hasBoard = Boolean(state.analysis.game);
   const scoreLabel = Number.isFinite(state.engine.scoreValue) ? state.engine.evalLabel : 'Pending';
   const annotateButtonClass = `action-button tonal ${state.annotations.enabled ? 'is-active' : ''}`.trim();
+  const analyzeButtonLabel = currentAnalyzeButtonLabel();
+  const analysisButtonDisabled = !hasBoard || state.engine.loading || state.engine.stopping;
+  const analyzeButtonTone = state.engine.analyzing || state.engine.stopping ? 'danger' : 'primary';
+  const pvLineMarkup = state.pvLinesVisible ? renderPvLineListMarkup() : '';
   dom.analysisPanel.innerHTML = `
     <article class="lesson-section">
       <div class="lesson-section-header">
@@ -2761,8 +2882,8 @@ function renderAnalysisPanel() {
         </div>
       </div>
       <div class="action-row action-row-compact">
-        <button type="button" class="action-button primary" data-action="toggle-analysis" ${hasBoard ? '' : 'disabled'}>
-          ${state.engine.loading ? 'Loading Stockfish...' : state.engine.stopping ? 'Stopping...' : state.engine.analyzing ? 'Stop analysis' : 'Analyze'}
+        <button type="button" class="action-button ${analyzeButtonTone}" data-action="toggle-analysis" ${analysisButtonDisabled ? 'disabled' : ''}>
+          ${escapeHtml(analyzeButtonLabel)}
         </button>
         <button type="button" class="action-button tonal" data-action="reset-analysis" ${hasBoard ? '' : 'disabled'}>Reset to setup</button>
         <button type="button" class="${annotateButtonClass}" data-action="toggle-annotate" aria-pressed="${state.annotations.enabled ? 'true' : 'false'}">Annotate</button>
@@ -2793,7 +2914,7 @@ function renderAnalysisPanel() {
             <div>${escapeHtml(state.engine.summary)}</div>
           </div>
         </div>
-        <div class="pv-line">${state.engine.pv ? escapeHtml(`PV: ${state.engine.pv}`) : 'PV: No principal variation yet.'}</div>
+        ${pvLineMarkup}
       </div>
     </article>
   `;
@@ -3225,6 +3346,14 @@ function handleDocumentClick(event) {
       state.toolsExpanded = !state.toolsExpanded;
       closeLessonActionsMenu({ restoreFocus: true });
       renderWorkspaceTools();
+      syncLessonVisibilityMenuState();
+      schedulePersist();
+      break;
+    case 'toggle-pv-lines':
+      state.pvLinesVisible = !state.pvLinesVisible;
+      closeLessonActionsMenu({ restoreFocus: true });
+      renderNotationPanel();
+      renderAnalysisPanel();
       syncLessonVisibilityMenuState();
       schedulePersist();
       break;
