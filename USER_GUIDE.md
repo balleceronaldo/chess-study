@@ -37,8 +37,10 @@ If you want the fastest way to begin, do this:
 5. Use the `Setup` tab if you want to build a custom starting position.
 6. Click the `Analysis` tab.
 7. Click pieces to make moves.
-8. Click `Analyze` if you want Stockfish to evaluate the current position.
-9. Click the three-dot menu again and choose `Save lesson` when you want a file copy.
+8. Click the `Analyze` button beside the three-dot menu if you want Stockfish to evaluate the current position.
+9. Read the 3 engine lines that appear below the move list.
+10. Click the same button again when it changes to `Stop` if you want to stop the search.
+11. Click the three-dot menu again and choose `Save lesson` when you want a file copy.
 
 ## The Big Idea
 
@@ -72,8 +74,10 @@ The left side shows:
 The right side shows:
 
 - the lesson title box
+- the `Analyze` / `Stop` button
 - the three-dot menu
 - the notation tree, which is the move list
+- the engine lines area under the move list when PV lines are shown
 - move navigation buttons
 - the optional lesson note
 - the optional tools panel
@@ -90,6 +94,7 @@ From this menu you can:
 - `Save lesson`
 - `Show note` or `Hide note`
 - `Show tools` or `Hide tools`
+- `Show PV lines` or `Hide PV lines`
 - switch between `Light` and `Dark` theme
 
 Your theme choice is remembered in the same browser.
@@ -108,9 +113,10 @@ Here is a simple example you can follow from start to finish.
 8. Make a move on the board.
 9. Make another move.
 10. Watch the move list on the right grow as you play.
-11. Click `Analyze` to ask Stockfish what it thinks.
-12. Add a note if you want to explain the lesson.
-13. Click `Save lesson` when you want a file copy to keep or share.
+11. Click the header `Analyze` button to ask Stockfish what it thinks.
+12. Read the 3 PV lines that appear below the move list.
+13. Add a note if you want to explain the lesson.
+14. Click `Save lesson` when you want a file copy to keep or share.
 
 ## The Three Tabs
 
@@ -226,10 +232,14 @@ Choose the piece you want:
 
 ### Engine analysis
 
-The `Analysis` tab includes:
+The app has one main engine button beside the three-dot menu:
 
 - `Analyze`: start live Stockfish analysis
-- `Stop analysis`: stop the current search
+- `Stop`: stop the current search
+
+The `Analysis` tab also includes:
+
+- the same `Analyze` / `Stop` action
 - `Reset to setup`: clear the move tree and return to the original setup position
 - `Annotate`: turn on annotation-focused mode
 - `Flip board`
@@ -240,7 +250,7 @@ The engine area shows:
 - search depth
 - searched nodes
 - engine status text
-- principal variation, which is the engine's best line
+- the top 3 principal variation lines, which are the engine's candidate best lines
 
 The board can also show:
 
@@ -248,6 +258,20 @@ The board can also show:
 - an evaluation bar
 
 These only appear outside `Setup` and only after the engine has produced a score.
+
+### PV lines under the move list
+
+When analysis is running, the app can show 3 engine lines below the move list.
+
+Each line shows:
+
+- `PV 1`, `PV 2`, or `PV 3`
+- that line's evaluation
+- the sequence of moves for that candidate line
+
+This is useful because you can see more than one engine idea, not just the single best move.
+
+If you do not want to see these lines, open the three-dot menu and choose `Hide PV lines`.
 
 ## Line Tab
 
@@ -272,6 +296,7 @@ It shows:
 - the main line
 - side lines and variations
 - the currently selected move
+- the optional engine lines below it when PV lines are visible
 
 You can click any move in the notation tree to jump straight to that position.
 
@@ -363,6 +388,7 @@ A saved lesson file includes:
 - active tab
 - whether advanced setup details were open
 - whether the tools panel was open
+- whether PV lines were shown
 - the full lesson tree and current node
 - annotations
 - the lesson note
@@ -416,6 +442,7 @@ This draft remembers:
 - active tab
 - advanced setup panel state
 - tools panel state
+- whether PV lines are shown
 - full lesson tree
 - current node
 - annotations
@@ -457,8 +484,9 @@ The main exception is this:
 5. Leave the board in the normal starting position.
 6. Click `Analysis`.
 7. Play the moves you want.
-8. Click `Analyze` if you want engine help.
-9. Save the lesson file.
+8. Click the header `Analyze` button if you want engine help.
+9. Read the 3 PV lines below the move list if they are visible.
+10. Save the lesson file.
 
 ### Workflow 2: Build a custom puzzle or study position
 
@@ -485,6 +513,14 @@ The main exception is this:
 ### I do not see the tools panel
 
 Open the three-dot menu and click `Show tools`.
+
+### I do not see the PV lines
+
+Check these things:
+
+- click `Analyze` first so the engine starts searching
+- open the three-dot menu and click `Show PV lines` if they are hidden
+- wait a moment for Stockfish to produce lines
 
 ### I cannot move a piece
 
@@ -552,7 +588,9 @@ Use `Flip board` in the current tab.
 
 - use the website at `https://coachdinosaur.github.io/chess-study/`
 - click the three-dot menu if you need more controls
+- the button beside the three-dot menu toggles between `Analyze` and `Stop`
 - `Setup` changes the starting position
 - `Analysis` is where you normally make moves
+- the 3 PV lines below the move list can be shown or hidden from the three-dot menu
 - `Save lesson` creates a shareable file
 - the browser draft is helpful, but a saved lesson file is safer

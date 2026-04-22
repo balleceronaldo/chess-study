@@ -18,6 +18,7 @@ For normal use, you do not need to install anything or run a local server.
 - play moves from that position
 - create main lines and side variations
 - run Stockfish analysis in the browser
+- show the top 3 engine lines for the current position
 - draw arrows, circles, and highlighted squares
 - write a lesson note
 - save and reopen lessons as files
@@ -27,8 +28,9 @@ For normal use, you do not need to install anything or run a local server.
 The app is organized around:
 
 - a chessboard on the left
-- a lesson title, move tree, and navigation area on the right
+- a lesson title, `Analyze` / `Stop` button, move tree, and navigation area on the right
 - optional tools with `Setup`, `Analysis`, and `Line` tabs
+- a three-dot menu with note, tools, and PV-line visibility controls
 
 ## Lesson Files
 
@@ -45,6 +47,7 @@ Saved lesson files include:
 - board orientation
 - active tab
 - lesson tree and current node
+- whether PV lines are shown
 - annotations
 - lesson note
 
@@ -61,6 +64,7 @@ The app also keeps one browser-local working draft under `setup-analysis-draft-v
 - advanced-controls open state
 - current lesson-tree position
 - full lesson move tree, including variations
+- whether PV lines are shown
 - board annotations
 - lesson note text and note panel state
 
