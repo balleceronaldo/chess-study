@@ -32,7 +32,7 @@ The app is organized around:
 - a chessboard on the left
 - a lesson title, `Analyze` / `Stop` button, move tree, and navigation area on the right
 - optional tools with `Setup`, `Analysis`, and `Line` tabs
-- a three-dot menu with note, tools, and PV-line visibility controls
+- a three-dot menu with note, tools, PV-line visibility, and a mobile fullscreen toggle on supported browsers
 
 ## Practice Mode
 
@@ -94,6 +94,15 @@ The app also keeps one browser-local working draft under `setup-analysis-draft-v
 - lesson note text and note panel state
 
 This draft is local to one browser profile. If the lesson matters, save a lesson file.
+
+## Mobile Fullscreen
+
+On supported mobile browsers, the three-dot menu shows `Enter fullscreen` / `Exit fullscreen` in mobile view.
+
+Important limit:
+
+- this is best-effort browser fullscreen, not PWA standalone mode
+- iPhone Safari in a normal browser tab does not support hiding the browser bar for this app, so the fullscreen item stays hidden there
 
 ## Sharing and Multiple Users
 

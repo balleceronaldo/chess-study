@@ -98,9 +98,14 @@ From this menu you can:
 - `Show note` or `Hide note`
 - `Show tools` or `Hide tools`
 - `Show PV lines` or `Hide PV lines`
+- `Enter fullscreen` or `Exit fullscreen` on supported mobile browsers
 - switch between `Light` and `Dark` theme
 
 Your theme choice is remembered in the same browser.
+
+Important limit:
+
+- iPhone Safari in a normal browser tab does not support this fullscreen mode, so the menu item stays hidden there
 
 ## Your First Lesson
 

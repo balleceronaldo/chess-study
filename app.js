@@ -17,6 +17,8 @@ const ANALYSIS_TARGET_DEPTH_MIN = 1;
 const ANALYSIS_TARGET_DEPTH_MAX = 99;
 const LESSON_ACTIONS_MENU_GAP_REM = 0.4;
 const LESSON_ACTIONS_MENU_VIEWPORT_PADDING_REM = 0.5;
+const MOBILE_VIEWPORT_MEDIA_QUERY = '(max-width: 760px)';
+const MOBILE_COARSE_LANDSCAPE_MEDIA_QUERY = '(max-width: 1100px) and (min-width: 640px) and (orientation: landscape) and (pointer: coarse)';
 const ENGINE_SEARCH_MODE_CHECKPOINT = 'checkpoint';
 const ENGINE_SEARCH_MODE_CONTINUE = 'continue';
 const ENGINE_BUNDLE_CANDIDATES = Object.freeze([
@@ -121,6 +123,7 @@ const dom = {
   toggleNoteMenuButton: document.getElementById('toggleNoteMenuButton'),
   toggleToolsMenuButton: document.getElementById('toggleToolsMenuButton'),
   togglePvLinesMenuButton: document.getElementById('togglePvLinesMenuButton'),
+  toggleFullscreenMenuButton: document.getElementById('toggleFullscreenMenuButton'),
   colorThemeItems: Array.from(document.querySelectorAll('[data-action="set-color-theme"]')),
   lessonFileInput: document.getElementById('lessonFileInput'),
   pgnFileInput: document.getElementById('pgnFileInput'),
@@ -845,6 +848,127 @@ function syncLessonVisibilityMenuState() {
   }
 }
 
+function matchesMediaQuery(query) {
+  if (!query || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+  return window.matchMedia(query).matches;
+}
+
+function fullscreenTargetElement() {
+  return dom.rootElement || document.documentElement;
+}
+
+function isMobileLessonViewport() {
+  return matchesMediaQuery(MOBILE_VIEWPORT_MEDIA_QUERY) || matchesMediaQuery(MOBILE_COARSE_LANDSCAPE_MEDIA_QUERY);
+}
+
+function fullscreenElement() {
+  return document.fullscreenElement
+    || document.webkitFullscreenElement
+    || document.webkitCurrentFullScreenElement
+    || null;
+}
+
+function isFullscreenActive() {
+  return Boolean(fullscreenElement() || document.webkitIsFullScreen);
+}
+
+function canRequestDocumentFullscreen() {
+  const target = fullscreenTargetElement();
+  return Boolean(
+    target
+    && (
+      typeof target.requestFullscreen === 'function'
+      || typeof target.webkitRequestFullscreen === 'function'
+    )
+  );
+}
+
+function shouldShowFullscreenMenuItem() {
+  return isMobileLessonViewport() && canRequestDocumentFullscreen();
+}
+
+function syncFullscreenMenuState() {
+  if (!dom.toggleFullscreenMenuButton) {
+    return;
+  }
+  const visible = shouldShowFullscreenMenuItem();
+  dom.toggleFullscreenMenuButton.hidden = !visible;
+  dom.toggleFullscreenMenuButton.textContent = isFullscreenActive() ? 'Exit fullscreen' : 'Enter fullscreen';
+}
+
+function syncFullscreenUi() {
+  syncFullscreenMenuState();
+  syncOpenLessonActionsMenuLayout();
+}
+
+function reportFullscreenToggleError(error) {
+  console.warn('Unable to change fullscreen mode.', error);
+  syncLessonFileStatus('Unable to toggle fullscreen in this browser.');
+  syncFullscreenUi();
+}
+
+async function requestDocumentFullscreen() {
+  const target = fullscreenTargetElement();
+  if (!target) {
+    return false;
+  }
+  if (typeof target.requestFullscreen === 'function') {
+    try {
+      await target.requestFullscreen({ navigationUI: 'hide' });
+      return true;
+    } catch (primaryError) {
+      try {
+        await target.requestFullscreen();
+        return true;
+      } catch (fallbackError) {
+        throw fallbackError || primaryError;
+      }
+    }
+  }
+  if (typeof target.webkitRequestFullscreen === 'function') {
+    target.webkitRequestFullscreen();
+    return true;
+  }
+  return false;
+}
+
+async function exitDocumentFullscreen() {
+  if (typeof document.exitFullscreen === 'function') {
+    await document.exitFullscreen();
+    return true;
+  }
+  if (typeof document.webkitExitFullscreen === 'function') {
+    document.webkitExitFullscreen();
+    return true;
+  }
+  if (typeof document.webkitCancelFullScreen === 'function') {
+    document.webkitCancelFullScreen();
+    return true;
+  }
+  return false;
+}
+
+async function toggleFullscreenMode() {
+  closeLessonActionsMenu();
+  if (!shouldShowFullscreenMenuItem()) {
+    syncFullscreenUi();
+    return;
+  }
+  try {
+    const changed = isFullscreenActive()
+      ? await exitDocumentFullscreen()
+      : await requestDocumentFullscreen();
+    if (!changed) {
+      syncLessonFileStatus('Unable to toggle fullscreen in this browser.');
+      syncFullscreenUi();
+    }
+  } catch (error) {
+    reportFullscreenToggleError(error);
+  }
+}
+
 function applyColorTheme(theme, options = {}) {
   const { persist = false } = options;
   const nextTheme = normalizeColorTheme(theme);
@@ -954,7 +1078,17 @@ function toggleLessonActionsMenu() {
 
 function handleViewportResize() {
   renderBoard();
+  syncFullscreenMenuState();
   syncOpenLessonActionsMenuLayout();
+}
+
+function handleFullscreenChange() {
+  syncFullscreenMenuState();
+  handleViewportResize();
+}
+
+function handleFullscreenError() {
+  reportFullscreenToggleError(null);
 }
 
 function buildLessonPayload() {
@@ -4288,6 +4422,7 @@ function renderAll() {
   renderTabs();
   renderWorkspaceTools();
   syncLessonVisibilityMenuState();
+  syncFullscreenMenuState();
   renderPromotionModal();
 }
 
@@ -4674,6 +4809,9 @@ function handleDocumentClick(event) {
       syncLessonVisibilityMenuState();
       schedulePersist();
       break;
+    case 'toggle-fullscreen':
+      void toggleFullscreenMode();
+      break;
     case 'reset-analysis':
       resetAnalysisToSetup({ keepTab: true });
       renderAll();
@@ -4905,6 +5043,10 @@ function bindEvents() {
       dismissPromotionDialog();
     }
   });
+  document.addEventListener('fullscreenchange', handleFullscreenChange);
+  document.addEventListener('fullscreenerror', handleFullscreenError);
+  document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+  document.addEventListener('webkitfullscreenerror', handleFullscreenError);
   window.addEventListener('beforeunload', () => {
     persistDraft();
     terminateEngineWorker();
