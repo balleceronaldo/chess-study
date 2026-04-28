@@ -2052,3 +2052,103 @@ code {
     padding-top: 0.8rem;
   }
 }
+
+@media (max-width: 1100px) and (min-width: 640px) and (orientation: landscape) and (pointer: coarse) {
+  :root {
+    --notation-text-size: clamp(1rem, 2vw, 1.16rem);
+  }
+
+  html,
+  body {
+    overflow: hidden;
+  }
+
+  .page-shell {
+    height: var(--app-height);
+    min-height: 0;
+    padding: 0.65rem;
+    overflow: hidden;
+  }
+
+  .workspace {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: clamp(0.55rem, 1.4vw, 0.8rem);
+    min-height: calc(var(--app-height) - 1.3rem);
+    max-width: none;
+  }
+
+  .board-stage-card,
+  .control-pane {
+    position: sticky;
+    top: 0.65rem;
+  }
+
+  .board-stage-card {
+    gap: 0.35rem;
+  }
+
+  .board-column {
+    --board-frame-padding: 0.35rem;
+  }
+
+  .control-pane {
+    margin-left: 0;
+    max-height: calc(var(--app-height) - 1.3rem);
+  }
+
+  .control-pane-scroll {
+    gap: 0.75rem;
+    min-height: 0;
+    padding: 0 0 0.15rem;
+    overflow-y: auto;
+  }
+
+  .lesson-header,
+  .lesson-notation,
+  .lesson-tools,
+  .lesson-section,
+  .tab-panel {
+    gap: 0.65rem;
+  }
+
+  .lesson-header {
+    padding: 0.15rem 0 0.3rem;
+  }
+
+  .title-input.lesson-title-input {
+    min-height: 3.1rem;
+    padding: 0.75rem 0.85rem;
+  }
+
+  .lesson-header-actions {
+    gap: 0.45rem;
+  }
+
+  .header-analyze-button {
+    min-width: 6.4rem;
+  }
+
+  .eval-badge {
+    min-width: 4.2rem;
+    min-height: 2.35rem;
+    padding: 0.45rem 0.65rem;
+    font-size: 0.88rem;
+  }
+
+  .notation-panel {
+    min-height: 5.2rem;
+  }
+
+  .notation-toolbar {
+    margin-top: 0;
+  }
+
+  .lesson-tools,
+  .workspace-tools {
+    padding-top: 0.75rem;
+  }
+
+  .piece-palette {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
