@@ -124,6 +124,7 @@ const dom = {
   pgnFileInput: document.getElementById('pgnFileInput'),
   lessonFileStatus: document.getElementById('lessonFileStatus'),
   heroBanner: document.getElementById('heroBanner'),
+  controlPaneScroll: document.querySelector('.control-pane-scroll'),
   notationSummary: document.getElementById('notationSummary'),
   notationPanel: document.getElementById('notationPanel'),
   notationStartButton: document.getElementById('notationStartButton'),
@@ -1304,6 +1305,17 @@ function schedulePersist() {
   state.persistTimer = window.setTimeout(persistDraft, 120);
 }
 
+function withPreservedScroll(element, callback) {
+  if (!element || typeof callback !== 'function') {
+    callback?.();
+    return;
+  }
+  const { scrollTop, scrollLeft } = element;
+  callback();
+  element.scrollTop = scrollTop;
+  element.scrollLeft = scrollLeft;
+}
+
 function deriveAnalysisNodeCounter(nodes) {
   let maxIndex = 0;
   Object.keys(nodes || {}).forEach((id) => {
@@ -1865,7 +1877,7 @@ function setSetupActiveColor(color) {
   const nextMeta = cloneMeta(state.setup.meta);
   nextMeta.activeColor = color === 'b' ? 'b' : 'w';
   commitSetupState({ ...state.setup.pieces }, nextMeta, { syncFenInput: true, resetAnalysis: true });
-  renderAll();
+  renderAfterSetupMetaChange();
 }
 
 function updateCastlingRight(flag, enabled) {
@@ -1878,14 +1890,14 @@ function updateCastlingRight(flag, enabled) {
   const nextMeta = cloneMeta(state.setup.meta);
   nextMeta.castling = castlingStringFromRights(rights);
   commitSetupState({ ...state.setup.pieces }, nextMeta, { syncFenInput: true, resetAnalysis: true });
-  renderAll();
+  renderAfterSetupMetaChange();
 }
 
 function updateEnPassantSquare(square) {
   const nextMeta = cloneMeta(state.setup.meta);
   nextMeta.enPassant = square || '-';
   commitSetupState({ ...state.setup.pieces }, nextMeta, { syncFenInput: true, resetAnalysis: true });
-  renderAll();
+  renderAfterSetupMetaChange();
 }
 
 function clearAnalysisSelection() {
@@ -3878,7 +3890,7 @@ function advancedControlsMarkup() {
 
 function renderSetupPanel() {
   const currentPalette = currentPalettePieces();
-  dom.setupPanel.innerHTML = `
+  const markup = `
     <article class="lesson-section">
       <div class="lesson-section-header">
         <div>
@@ -3947,8 +3959,8 @@ function renderSetupPanel() {
         </div>
 
         <div class="action-row">
-          <button type="button" class="action-button primary" data-action="apply-fen">Apply FEN</button>
-          <button type="button" class="action-button tonal" data-action="reset-fen">Reset draft</button>
+          <button type="button" class="action-button action-button-static primary" data-action="apply-fen">Apply FEN</button>
+          <button type="button" class="action-button action-button-static tonal" data-action="reset-fen">Reset draft</button>
         </div>
 
         <div class="banner ${state.setup.fenError ? 'danger' : 'warning'}">
@@ -3968,6 +3980,9 @@ function renderSetupPanel() {
       ${state.setup.advancedOpen ? advancedControlsMarkup() : ''}
     </article>
   `;
+  withPreservedScroll(dom.controlPaneScroll, () => {
+    dom.setupPanel.innerHTML = markup;
+  });
 }
 
 function renderPracticeToolSection() {
@@ -4208,6 +4223,18 @@ function renderAll() {
   renderWorkspaceTools();
   syncLessonVisibilityMenuState();
   renderPromotionModal();
+}
+
+function renderAfterSetupMetaChange() {
+  withPreservedScroll(dom.controlPaneScroll, () => {
+    renderHeaderMeta();
+    renderHeroBanner();
+    renderNotationPanel();
+    renderSetupPanel();
+    renderAnalysisPanel();
+    renderPgnPanel();
+    renderPromotionModal();
+  });
 }
 
 function handleBoardClick(event) {

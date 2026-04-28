@@ -1489,6 +1489,10 @@ code {
   box-shadow: 0 12px 18px var(--control-hover-shadow);
 }
 
+.action-button.action-button-static:hover {
+  transform: none;
+}
+
 .action-button.primary {
   border-color: var(--button-primary-border);
   background: var(--button-primary-bg);
