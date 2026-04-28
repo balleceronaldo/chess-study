@@ -15,6 +15,8 @@ const ENGINE_READY_TIMEOUT_MS = 15000;
 const DEFAULT_ANALYSIS_TARGET_DEPTH = 30;
 const ANALYSIS_TARGET_DEPTH_MIN = 1;
 const ANALYSIS_TARGET_DEPTH_MAX = 99;
+const LESSON_ACTIONS_MENU_GAP_REM = 0.4;
+const LESSON_ACTIONS_MENU_VIEWPORT_PADDING_REM = 0.5;
 const ENGINE_SEARCH_MODE_CHECKPOINT = 'checkpoint';
 const ENGINE_SEARCH_MODE_CONTINUE = 'continue';
 const ENGINE_BUNDLE_CANDIDATES = Object.freeze([
@@ -866,14 +868,73 @@ function isLessonActionsMenuOpen() {
   return Boolean(dom.lessonActionsMenu && !dom.lessonActionsMenu.hidden);
 }
 
+function clearLessonActionsMenuLayout() {
+  if (!dom.lessonActionsMenu) {
+    return;
+  }
+  dom.lessonActionsMenu.removeAttribute('data-placement');
+  dom.lessonActionsMenu.style.removeProperty('max-height');
+}
+
+function syncLessonActionsMenuLayout() {
+  if (!dom.lessonActionsButton || !dom.lessonActionsMenu || dom.lessonActionsMenu.hidden) {
+    return;
+  }
+
+  const menuGap = remToPx(LESSON_ACTIONS_MENU_GAP_REM);
+  const viewportPadding = remToPx(LESSON_ACTIONS_MENU_VIEWPORT_PADDING_REM);
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  const buttonRect = dom.lessonActionsButton.getBoundingClientRect();
+
+  clearLessonActionsMenuLayout();
+  dom.lessonActionsMenu.dataset.placement = 'down';
+
+  const naturalHeight = Math.ceil(dom.lessonActionsMenu.getBoundingClientRect().height);
+  const availableBelow = Math.max(0, viewportHeight - buttonRect.bottom - menuGap - viewportPadding);
+  const availableAbove = Math.max(0, buttonRect.top - menuGap - viewportPadding);
+
+  let placement = 'down';
+  let availableSpace = availableBelow;
+
+  if (naturalHeight <= availableBelow) {
+    placement = 'down';
+    availableSpace = availableBelow;
+  } else if (naturalHeight <= availableAbove) {
+    placement = 'up';
+    availableSpace = availableAbove;
+  } else if (availableAbove > availableBelow) {
+    placement = 'up';
+    availableSpace = availableAbove;
+  }
+
+  dom.lessonActionsMenu.dataset.placement = placement;
+  if (availableSpace > 0) {
+    dom.lessonActionsMenu.style.maxHeight = `${Math.floor(availableSpace)}px`;
+  }
+}
+
+function syncOpenLessonActionsMenuLayout() {
+  if (!isLessonActionsMenuOpen()) {
+    return;
+  }
+  syncLessonActionsMenuLayout();
+}
+
 function setLessonActionsMenuOpen(isOpen) {
   if (!dom.lessonActionsButton || !dom.lessonActionsMenu) {
     return;
   }
   const nextOpen = Boolean(isOpen);
   dom.lessonActionsButton.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
-  dom.lessonActionsMenu.hidden = !nextOpen;
   dom.lessonActionsButton.closest('.lesson-overflow')?.classList.toggle('is-open', nextOpen);
+  if (nextOpen) {
+    dom.lessonActionsMenu.hidden = false;
+    dom.lessonActionsMenu.scrollTop = 0;
+    syncLessonActionsMenuLayout();
+    return;
+  }
+  clearLessonActionsMenuLayout();
+  dom.lessonActionsMenu.hidden = true;
 }
 
 function closeLessonActionsMenu(options = {}) {
@@ -889,6 +950,11 @@ function closeLessonActionsMenu(options = {}) {
 
 function toggleLessonActionsMenu() {
   setLessonActionsMenuOpen(!isLessonActionsMenuOpen());
+}
+
+function handleViewportResize() {
+  renderBoard();
+  syncOpenLessonActionsMenuLayout();
 }
 
 function buildLessonPayload() {
@@ -4843,7 +4909,8 @@ function bindEvents() {
     persistDraft();
     terminateEngineWorker();
   });
-  window.addEventListener('resize', renderBoard);
+  window.addEventListener('resize', handleViewportResize);
+  window.visualViewport?.addEventListener('resize', syncOpenLessonActionsMenuLayout);
   window.addEventListener('blur', cancelAnnotationGesture);
   syncLessonFileStatus(state.lessonFileStatus);
   setLessonActionsMenuOpen(false);
