@@ -124,7 +124,10 @@
               <div id="lessonActionsMenu" class="lesson-overflow-menu" role="menu" aria-labelledby="lessonActionsButton" hidden>
                 <button id="openLessonButton" type="button" class="lesson-overflow-item" data-action="open-lesson" role="menuitem">Open lesson</button>
                 <button id="saveLessonButton" type="button" class="lesson-overflow-item" data-action="save-lesson" role="menuitem">Save lesson</button>
+                <button id="importPgnButton" type="button" class="lesson-overflow-item" data-action="import-pgn" role="menuitem">Import PGN</button>
+                <button id="exportPgnButton" type="button" class="lesson-overflow-item" data-action="export-pgn" role="menuitem">Export PGN</button>
                 <button id="copyFenButton" type="button" class="lesson-overflow-item" data-action="copy-fen" role="menuitem">Copy FEN</button>
+                <button id="togglePgnCommentsMenuButton" type="button" class="lesson-overflow-item" data-action="toggle-pgn-comments" role="menuitem">Hide PGN comments</button>
                 <button id="toggleNoteMenuButton" type="button" class="lesson-overflow-item" data-action="toggle-note" role="menuitem">Show note</button>
                 <button id="toggleToolsMenuButton" type="button" class="lesson-overflow-item" data-action="toggle-tools" role="menuitem">Show tools</button>
                 <button id="togglePvLinesMenuButton" type="button" class="lesson-overflow-item" data-action="toggle-pv-lines" role="menuitem">Hide PV lines</button>
@@ -159,6 +162,7 @@
           </div>
           <p id="lessonFileStatus" class="lesson-file-status" aria-live="polite"></p>
           <input id="lessonFileInput" type="file" accept=".json,.lesson.json,application/json" hidden>
+          <input id="pgnFileInput" type="file" accept=".pgn,.txt,text/plain,application/x-chess-pgn" hidden>
           <span id="engineReadyLabel" class="sr-only">Stockfish idle</span>
           <div id="heroBanner" class="hero-banner recording-hidden" aria-hidden="true"></div>
         </section>

@@ -10,6 +10,7 @@ You can use it to:
 - play moves from that position
 - build main lines and side lines
 - ask Stockfish for analysis
+- practice a recorded line or branch without seeing future moves
 - draw arrows, circles, and highlights on the board
 - write a lesson note
 - save the lesson as a file and open it again later
@@ -92,6 +93,8 @@ From this menu you can:
 
 - `Open lesson`
 - `Save lesson`
+- `Import PGN`
+- `Export PGN`
 - `Show note` or `Hide note`
 - `Show tools` or `Hide tools`
 - `Show PV lines` or `Hide PV lines`
@@ -219,6 +222,32 @@ The app automatically:
 
 If the move already exists from the current node, the app reuses that branch instead of making a duplicate.
 
+### Practice mode
+
+You can also use the recorded lesson tree as a simple training drill.
+
+- open `Analysis` or `Line`
+- choose `Selected line` or `Branch drill`
+- click `Start practice`
+- `Selected line` uses the currently displayed lesson line from the start position
+- `Branch drill` starts from the current position and accepts any recorded child move
+- future moves are hidden until you solve them
+- Stockfish output is hidden during practice
+
+While practice is active:
+
+- play a recorded move on the board
+- use `Hint` if you want a lighter clue
+- use `Reveal move` if you want to give up on the current move
+- use `Restart` to begin the same drill again
+- use `Stop practice` to return to normal analysis
+
+Important behavior:
+
+- wrong guesses do not create new lesson moves
+- branch drills do not change the coach's saved preferred variation
+- changing the setup or resetting analysis ends the practice session
+
 ### Promotions
 
 If a pawn can promote in more than one way, the app opens a promotion dialog.
@@ -295,6 +324,7 @@ It shows:
 
 - the main line
 - side lines and variations
+- inline PGN comment previews when a move has a comment
 - the currently selected move
 - the optional engine lines below it when PV lines are visible
 
@@ -365,9 +395,21 @@ When the note is visible, you can type any text you want below the move list.
 
 The note text and its visibility are saved with the lesson.
 
+## PGN Comments
+
+PGN comments are different from the lesson note.
+
+- the lesson note is one free-form note for the whole lesson
+- the PGN comment box is tied to the currently selected position in the move tree
+- when you click a move, the PGN comment editor switches to that position
+- PGN comments are included in `Export PGN`
+- imported PGN comments appear inline in the move list and in the PGN comment box
+
+If the selected position is the start position, the PGN comment is saved before the first move in the exported PGN.
+
 ## Saving, Opening, and Sharing Lessons
 
-### What kind of file gets saved
+### Lesson JSON files
 
 `Save lesson` downloads a JSON file.
 
@@ -378,7 +420,7 @@ The app usually names it like this:
 
 This file can be kept, copied, moved, emailed, or shared like a normal file.
 
-### What gets saved in the file
+### What gets saved in a lesson JSON file
 
 A saved lesson file includes:
 
@@ -392,6 +434,7 @@ A saved lesson file includes:
 - the full lesson tree and current node
 - annotations
 - the lesson note
+- PGN comments attached to positions in the move tree
 
 ### How to save a lesson
 
@@ -409,11 +452,42 @@ A saved lesson file includes:
 
 The app checks the file before loading it. If the JSON is broken, the version is unsupported, or the lesson tree is invalid, the app shows an error instead of loading bad data.
 
+### PGN files
+
+`Export PGN` downloads a `.pgn` file.
+
+PGN export includes:
+
+- lesson title as the PGN event name
+- starting FEN when needed
+- the selected main line plus all recorded variations
+- PGN comments from the move tree
+
+PGN export does not keep app-only details such as:
+
+- board orientation
+- the lesson note
+- annotations
+- whether tools or PV lines were visible
+
+### How to export PGN
+
+1. Open the three-dot menu.
+2. Click `Export PGN`.
+3. Your browser downloads a `.pgn` file.
+
+### How to import PGN
+
+1. Open the three-dot menu.
+2. Click `Import PGN`.
+3. Pick a `.pgn` file from your device.
+4. The app rebuilds the move tree, variations, and PGN comments from that file.
+
 ### Sharing with other people
 
-Yes, you can share lesson files.
+Yes, you can share lesson files and PGN files.
 
-For example, you can send a saved lesson file by:
+For example, you can send a saved file by:
 
 - email
 - chat
@@ -443,6 +517,7 @@ This draft remembers:
 - advanced setup panel state
 - tools panel state
 - whether PV lines are shown
+- practice mode preference
 - full lesson tree
 - current node
 - annotations

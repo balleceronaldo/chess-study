@@ -1,4 +1,5 @@
 import { Chess, DEFAULT_POSITION, validateFen } from './vendor/chess.js';
+import { buildPgnFromLessonTree, parsePgnToLessonTree } from './pgn.mjs';
 
 const STORAGE_KEY = 'setup-analysis-draft-v1';
 const COLOR_THEME_STORAGE_KEY = 'color-theme-v1';
@@ -10,9 +11,47 @@ const BOARD_CELL_SIZE = BOARD_VIEWBOX_SIZE / 8;
 const ANNOTATION_ARROW_HEAD_LENGTH = 30;
 const ANNOTATION_ARROW_HEAD_WIDTH = 40;
 const ENGINE_MULTI_PV_COUNT = 3;
+const ENGINE_READY_TIMEOUT_MS = 15000;
+const DEFAULT_ANALYSIS_TARGET_DEPTH = 30;
+const ANALYSIS_TARGET_DEPTH_MIN = 1;
+const ANALYSIS_TARGET_DEPTH_MAX = 99;
+const ENGINE_SEARCH_MODE_CHECKPOINT = 'checkpoint';
+const ENGINE_SEARCH_MODE_CONTINUE = 'continue';
+const ENGINE_BUNDLE_CANDIDATES = Object.freeze([
+  Object.freeze({
+    id: 'full-multi',
+    label: 'full multi-threaded',
+    workerPath: './vendor/stockfish/stockfish-18.js',
+    wasmPath: './vendor/stockfish/stockfish-18.wasm',
+    requiresCrossOriginIsolation: true,
+  }),
+  Object.freeze({
+    id: 'full-single',
+    label: 'full single-threaded',
+    workerPath: './vendor/stockfish/stockfish-18-single.js',
+    wasmPath: './vendor/stockfish/stockfish-18-single.wasm',
+    requiresCrossOriginIsolation: false,
+  }),
+  Object.freeze({
+    id: 'lite-multi',
+    label: 'lite multi-threaded',
+    workerPath: './vendor/stockfish/stockfish-18-lite.js',
+    wasmPath: './vendor/stockfish/stockfish-18-lite.wasm',
+    requiresCrossOriginIsolation: true,
+  }),
+  Object.freeze({
+    id: 'lite-single',
+    label: 'lite single-threaded',
+    workerPath: './vendor/stockfish/stockfish-18-lite-single.js',
+    wasmPath: './vendor/stockfish/stockfish-18-lite-single.wasm',
+    requiresCrossOriginIsolation: false,
+  }),
+]);
 const TAB_SETUP = 'setup';
 const TAB_ANALYSIS = 'analysis';
 const TAB_PGN = 'pgn';
+const PRACTICE_KIND_LINE = 'line';
+const PRACTICE_KIND_BRANCH = 'branch';
 const DEFAULT_TITLE = '';
 const LESSON_FILE_VERSION = 1;
 const ROOT_NODE_ID = 'root';
@@ -74,11 +113,15 @@ const dom = {
   lessonActionsMenu: document.getElementById('lessonActionsMenu'),
   openLessonButton: document.getElementById('openLessonButton'),
   saveLessonButton: document.getElementById('saveLessonButton'),
+  importPgnButton: document.getElementById('importPgnButton'),
+  exportPgnButton: document.getElementById('exportPgnButton'),
+  togglePgnCommentsMenuButton: document.getElementById('togglePgnCommentsMenuButton'),
   toggleNoteMenuButton: document.getElementById('toggleNoteMenuButton'),
   toggleToolsMenuButton: document.getElementById('toggleToolsMenuButton'),
   togglePvLinesMenuButton: document.getElementById('togglePvLinesMenuButton'),
   colorThemeItems: Array.from(document.querySelectorAll('[data-action="set-color-theme"]')),
   lessonFileInput: document.getElementById('lessonFileInput'),
+  pgnFileInput: document.getElementById('pgnFileInput'),
   lessonFileStatus: document.getElementById('lessonFileStatus'),
   heroBanner: document.getElementById('heroBanner'),
   notationSummary: document.getElementById('notationSummary'),
@@ -128,6 +171,10 @@ const state = {
     text: '',
     expanded: false,
   },
+  practicePreferenceKind: PRACTICE_KIND_LINE,
+  analysisTargetDepth: DEFAULT_ANALYSIS_TARGET_DEPTH,
+  practice: createEmptyPracticeState(),
+  pgnCommentsVisible: true,
   toolsExpanded: false,
   pvLinesVisible: true,
   lessonFileStatus: '',
@@ -137,6 +184,9 @@ const state = {
     loading: false,
     analyzing: false,
     stopping: false,
+    bundleId: '',
+    bundleLabel: '',
+    bundlePath: '',
     loadingPromise: null,
     readyTimer: null,
     resolveReady: null,
@@ -145,6 +195,7 @@ const state = {
     pendingFen: '',
     resumeFen: '',
     resumeEligible: false,
+    resumeDepth: null,
     summary: 'Select Analyze to load Stockfish for this board.',
     pvLines: createEmptyEnginePvLines(),
     depth: null,
@@ -154,6 +205,9 @@ const state = {
     scoreValue: null,
     evalLabel: '0.00',
     bestMove: '',
+    searchMode: '',
+    pendingSearchMode: '',
+    searchTargetDepth: null,
     evalRailVisible: true,
   },
   annotations: {
@@ -171,6 +225,10 @@ const state = {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function pluralize(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 function remToPx(rem) {
@@ -211,6 +269,7 @@ function createEmptyEnginePvLine(index) {
   return {
     index,
     line: '',
+    depth: null,
     scoreType: '',
     scoreValue: null,
     evalLabel: '',
@@ -221,12 +280,58 @@ function createEmptyEnginePvLines() {
   return Array.from({ length: ENGINE_MULTI_PV_COUNT }, (_, index) => createEmptyEnginePvLine(index + 1));
 }
 
+function createEmptyPracticeState() {
+  return {
+    active: false,
+    kind: PRACTICE_KIND_LINE,
+    branchRootNodeId: ROOT_NODE_ID,
+    lineNodeIds: [],
+    positionIndex: 0,
+    correctCount: 0,
+    incorrectCount: 0,
+    revealedCount: 0,
+    feedback: '',
+    feedbackKind: 'warning',
+  };
+}
+
+function normalizePracticeKind(value) {
+  return value === PRACTICE_KIND_BRANCH ? PRACTICE_KIND_BRANCH : PRACTICE_KIND_LINE;
+}
+
+function normalizeAnalysisTargetDepth(value) {
+  const numeric = Number.parseInt(String(value ?? '').trim(), 10);
+  if (!Number.isFinite(numeric)) {
+    return DEFAULT_ANALYSIS_TARGET_DEPTH;
+  }
+  return clamp(Math.trunc(numeric), ANALYSIS_TARGET_DEPTH_MIN, ANALYSIS_TARGET_DEPTH_MAX);
+}
+
+function currentAnalysisTargetDepth() {
+  return normalizeAnalysisTargetDepth(state.analysisTargetDepth);
+}
+
+function clearEngineContinuationState() {
+  state.engine.resumeFen = '';
+  state.engine.resumeEligible = false;
+  state.engine.resumeDepth = null;
+}
+
+function hasAnalysisContinuationAvailable() {
+  return Boolean(
+    state.engine.resumeEligible
+    && state.engine.resumeFen
+    && state.engine.resumeFen === state.analysis.currentFen,
+  );
+}
+
 function clearEngineSearchData(options = {}) {
   const { preserveEval = false } = options;
   state.engine.pvLines = createEmptyEnginePvLines();
   state.engine.depth = null;
   state.engine.nodes = 0;
   state.engine.nps = 0;
+  state.engine.searchTargetDepth = null;
   if (!preserveEval) {
     state.engine.scoreType = '';
     state.engine.scoreValue = null;
@@ -236,13 +341,21 @@ function clearEngineSearchData(options = {}) {
 }
 
 function postEngineSearchCommands(worker, fen, options = {}) {
-  const { freshGame = true } = options;
+  const {
+    freshGame = true,
+    searchMode = ENGINE_SEARCH_MODE_CHECKPOINT,
+    targetDepth = currentAnalysisTargetDepth(),
+  } = options;
   worker.postMessage(`setoption name MultiPV value ${ENGINE_MULTI_PV_COUNT}`);
   if (freshGame) {
     worker.postMessage('ucinewgame');
   }
   worker.postMessage(`position fen ${fen}`);
-  worker.postMessage('go infinite');
+  if (searchMode === ENGINE_SEARCH_MODE_CONTINUE) {
+    worker.postMessage('go infinite');
+    return;
+  }
+  worker.postMessage(`go depth ${normalizeAnalysisTargetDepth(targetDepth)}`);
 }
 
 function startEngineSearch(worker, fen, options = {}) {
@@ -250,22 +363,32 @@ function startEngineSearch(worker, fen, options = {}) {
     preserveDisplay = false,
     freshGame = true,
     summary = 'Analyzing current board position...',
+    searchMode = ENGINE_SEARCH_MODE_CHECKPOINT,
+    targetDepth = null,
   } = options;
   if (!preserveDisplay) {
     clearEngineSearchData();
   }
   state.engine.pendingFen = '';
-  state.engine.resumeFen = '';
-  state.engine.resumeEligible = false;
+  state.engine.pendingSearchMode = '';
+  clearEngineContinuationState();
   state.engine.searchFen = fen;
   state.engine.analyzing = true;
   state.engine.stopping = false;
+  state.engine.searchMode = searchMode;
+  state.engine.searchTargetDepth = searchMode === ENGINE_SEARCH_MODE_CHECKPOINT
+    ? normalizeAnalysisTargetDepth(targetDepth)
+    : (Number.isFinite(targetDepth) ? Math.trunc(targetDepth) : null);
   state.engine.summary = summary;
   renderNotationPanel();
   renderAnalysisPanel();
   renderBoard();
   renderHeaderMeta();
-  postEngineSearchCommands(worker, fen, { freshGame });
+  postEngineSearchCommands(worker, fen, {
+    freshGame,
+    searchMode,
+    targetDepth: state.engine.searchTargetDepth,
+  });
 }
 
 function queueEngineSearchForFen(fen) {
@@ -273,11 +396,13 @@ function queueEngineSearchForFen(fen) {
     return;
   }
   state.engine.pendingFen = fen;
+  state.engine.pendingSearchMode = state.engine.searchMode || ENGINE_SEARCH_MODE_CHECKPOINT;
   state.engine.searchFen = '';
-  state.engine.resumeFen = '';
-  state.engine.resumeEligible = false;
+  clearEngineContinuationState();
   clearEngineSearchData({ preserveEval: true });
-  state.engine.summary = 'Updating analysis for the current board position...';
+  state.engine.summary = state.engine.pendingSearchMode === ENGINE_SEARCH_MODE_CONTINUE
+    ? 'Continuing analysis from the current board position...'
+    : `Analyzing current board position toward depth ${currentAnalysisTargetDepth()}...`;
   renderNotationPanel();
   renderAnalysisPanel();
   renderBoard();
@@ -342,6 +467,12 @@ function normalizeNoteState(value) {
   };
 }
 
+function normalizeAnalysisComment(value) {
+  return typeof value === 'string'
+    ? value.replace(/\r\n?/g, '\n')
+    : '';
+}
+
 function createAnalysisRootNode(fen) {
   return {
     id: ROOT_NODE_ID,
@@ -349,6 +480,7 @@ function createAnalysisRootNode(fen) {
     fen,
     children: [],
     selectedChildId: null,
+    comment: '',
   };
 }
 
@@ -453,6 +585,162 @@ function countAnalysisBranchPoints() {
   return Object.values(state.analysis.nodes).filter((node) => Array.isArray(node.children) && node.children.length > 1).length;
 }
 
+function getAnalysisChildNodes(nodeOrId) {
+  const node = typeof nodeOrId === 'string' ? getAnalysisNode(nodeOrId) : nodeOrId;
+  if (!node || !Array.isArray(node.children) || !node.children.length) {
+    return [];
+  }
+  return node.children
+    .map((childId) => getAnalysisNode(childId))
+    .filter(Boolean);
+}
+
+function buildDisplayedLineNodeIds(startNodeId = state.analysis.rootId) {
+  const lineNodeIds = [];
+  let cursorId = startNodeId;
+  const seen = new Set();
+  while (cursorId && !seen.has(cursorId)) {
+    const node = getAnalysisNode(cursorId);
+    if (!node) {
+      break;
+    }
+    lineNodeIds.push(cursorId);
+    seen.add(cursorId);
+    cursorId = getAnalysisNextNodeId(cursorId);
+  }
+  return lineNodeIds;
+}
+
+function practiceMoveTotal() {
+  return Math.max(0, state.practice.lineNodeIds.length - 1);
+}
+
+function practiceProgressCount() {
+  return state.practice.kind === PRACTICE_KIND_BRANCH
+    ? Math.max(0, state.practice.positionIndex)
+    : clamp(state.practice.positionIndex, 0, practiceMoveTotal());
+}
+
+function getPracticeExpectedNodeId() {
+  if (state.practice.kind !== PRACTICE_KIND_LINE) {
+    return '';
+  }
+  return state.practice.lineNodeIds[state.practice.positionIndex + 1] || '';
+}
+
+function getPracticeExpectedNode() {
+  return getAnalysisNode(getPracticeExpectedNodeId());
+}
+
+function getPracticePreferredChildNode(node = getCurrentAnalysisNode()) {
+  if (!node) {
+    return null;
+  }
+  if (node.selectedChildId) {
+    const selectedChild = getAnalysisNode(node.selectedChildId);
+    if (selectedChild && node.children.includes(selectedChild.id)) {
+      return selectedChild;
+    }
+  }
+  return getAnalysisChildNodes(node)[0] || null;
+}
+
+function getPracticeCandidateNodes() {
+  if (!state.practice.active) {
+    return [];
+  }
+  if (state.practice.kind === PRACTICE_KIND_BRANCH) {
+    return getAnalysisChildNodes(getCurrentAnalysisNode());
+  }
+  const expectedNode = getPracticeExpectedNode();
+  return expectedNode ? [expectedNode] : [];
+}
+
+function selectedLinePracticeReady() {
+  return buildDisplayedLineNodeIds(state.analysis.rootId).length > 1;
+}
+
+function branchPracticeReady(startNodeId = state.analysis.currentNodeId) {
+  return getAnalysisChildNodes(startNodeId).length > 0;
+}
+
+function practiceComplete() {
+  if (!state.practice.active) {
+    return false;
+  }
+  if (state.practice.kind === PRACTICE_KIND_BRANCH) {
+    return getPracticeCandidateNodes().length === 0;
+  }
+  return !getPracticeExpectedNodeId();
+}
+
+function practiceWillCompleteAfterAdvance(nextNode) {
+  if (!nextNode) {
+    return true;
+  }
+  if (state.practice.kind === PRACTICE_KIND_BRANCH) {
+    return getAnalysisChildNodes(nextNode).length === 0;
+  }
+  return !state.practice.lineNodeIds[state.practice.positionIndex + 1];
+}
+
+function getPracticeSolvedNodes() {
+  if (!state.practice.active) {
+    return [];
+  }
+  const pathIds = getAnalysisPathIds(state.analysis.currentNodeId);
+  const startIndex = pathIds.indexOf(state.practice.branchRootNodeId);
+  if (startIndex === -1) {
+    return [];
+  }
+  return pathIds
+    .slice(startIndex + 1)
+    .map((nodeId) => getAnalysisNode(nodeId))
+    .filter(Boolean);
+}
+
+function practicePrimaryStatusLabel() {
+  return state.practice.kind === PRACTICE_KIND_BRANCH ? 'Solved' : 'Progress';
+}
+
+function practicePrimaryStatusValue() {
+  return state.practice.kind === PRACTICE_KIND_BRANCH
+    ? String(practiceProgressCount())
+    : `${practiceProgressCount()} / ${practiceMoveTotal()}`;
+}
+
+function currentPracticePrompt() {
+  if (!state.practice.active) {
+    return '';
+  }
+  if (practiceComplete()) {
+    return `Practice complete. ${pluralize(state.practice.correctCount, 'correct move')}, ${pluralize(state.practice.incorrectCount, 'mistake')}, ${pluralize(state.practice.revealedCount, 'reveal')}.`;
+  }
+  const sideToMove = state.analysis.game?.turn() === 'b' ? 'Black' : 'White';
+  if (state.practice.kind === PRACTICE_KIND_BRANCH) {
+    return `Branch drill from the selected position. ${sideToMove} to play.`;
+  }
+  return `Practice move ${practiceProgressCount() + 1} of ${practiceMoveTotal()}. ${sideToMove} to play.`;
+}
+
+function currentPracticeFeedback() {
+  if (!state.practice.active) {
+    return '';
+  }
+  return state.practice.feedback || (
+    state.practice.kind === PRACTICE_KIND_BRANCH
+      ? 'Play any recorded continuation from this position.'
+      : 'Play the next recorded move from the selected lesson line.'
+  );
+}
+
+function syncPracticeBoardMessage() {
+  if (!state.practice.active) {
+    return;
+  }
+  state.analysis.boardMessage = currentPracticePrompt();
+}
+
 function isBlackMoveForPly(ply) {
   const startsBlack = state.setup.meta.activeColor === 'b';
   return startsBlack ? ply % 2 === 1 : ply % 2 === 0;
@@ -540,6 +828,9 @@ function syncColorThemeMenuState() {
 }
 
 function syncLessonVisibilityMenuState() {
+  if (dom.togglePgnCommentsMenuButton) {
+    dom.togglePgnCommentsMenuButton.textContent = state.pgnCommentsVisible ? 'Hide PGN comments' : 'Show PGN comments';
+  }
   if (dom.toggleNoteMenuButton) {
     dom.toggleNoteMenuButton.textContent = state.note.expanded ? 'Hide note' : 'Show note';
   }
@@ -604,16 +895,25 @@ function buildLessonPayload() {
     version: LESSON_FILE_VERSION,
     title: state.title,
     setupFen: state.setupFen,
+    analysisTargetDepth: currentAnalysisTargetDepth(),
     boardOrientation: state.boardOrientation,
     activeTab: state.activeTab,
     advancedOpen: state.setup.advancedOpen,
     toolsExpanded: state.toolsExpanded,
+    pgnCommentsVisible: state.pgnCommentsVisible,
     pvLinesVisible: state.pvLinesVisible,
     currentNodeId: state.analysis.currentNodeId,
     rootId: state.analysis.rootId,
     nodes: cloneAnalysisNodes(state.analysis.nodes),
     annotations: buildAnnotationPayload(),
     note: normalizeNoteState(state.note),
+  };
+}
+
+function buildDraftPayload() {
+  return {
+    ...buildLessonPayload(),
+    practiceKindPreference: state.practicePreferenceKind,
   };
 }
 
@@ -990,10 +1290,13 @@ function defaultAnalysisSummary() {
   if (!state.analysis.game) {
     return 'Fix the setup in the Setup tab to enable legal-move analysis.';
   }
+  const targetDepth = currentAnalysisTargetDepth();
   if (state.engine.ready) {
-    return 'Stockfish ready. Analyze the current board position.';
+    return state.engine.bundleLabel
+      ? `Stockfish ready (${state.engine.bundleLabel}). Analyze to depth ${targetDepth} from the current board position.`
+      : `Stockfish ready. Analyze to depth ${targetDepth} from the current board position.`;
   }
-  return 'Select Analyze to load Stockfish for this board.';
+  return `Select Analyze to load Stockfish for this board and search to depth ${targetDepth}.`;
 }
 
 function schedulePersist() {
@@ -1050,6 +1353,7 @@ function buildLegacyAnalysisTree(history, cursor, setupFen) {
         fen: game.fen(),
         children: [],
         selectedChildId: null,
+        comment: '',
       };
       const parent = tree.nodes[parentId];
       parent.children.push(nodeId);
@@ -1114,6 +1418,7 @@ function validateAndNormalizeLessonNodes(rawNodes, rootId, currentNodeId, setupF
       fen: String(rawNode.fen || '').trim(),
       children: uniqueChildren,
       selectedChildId,
+      comment: normalizeAnalysisComment(rawNode.comment),
     };
 
     if (id === rootId) {
@@ -1236,10 +1541,12 @@ function validateAndNormalizeLessonPayload(payload) {
 
   return {
     title: typeof payload.title === 'string' ? payload.title : DEFAULT_TITLE,
+    analysisTargetDepth: normalizeAnalysisTargetDepth(payload.analysisTargetDepth),
     boardOrientation: payload.boardOrientation === 'black' ? 'black' : 'white',
     activeTab: [TAB_SETUP, TAB_ANALYSIS, TAB_PGN].includes(payload.activeTab) ? payload.activeTab : TAB_PGN,
     advancedOpen: Boolean(payload.advancedOpen),
     toolsExpanded: Boolean(payload.toolsExpanded),
+    pgnCommentsVisible: payload.pgnCommentsVisible !== false,
     pvLinesVisible: payload.pvLinesVisible !== false,
     setupFen: normalizedSetup.setupFen,
     setup: normalizedSetup.setup,
@@ -1250,16 +1557,18 @@ function validateAndNormalizeLessonPayload(payload) {
 }
 
 function persistDraft() {
-  const payload = buildLessonPayload();
+  const payload = buildDraftPayload();
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
 }
 
 function applyLessonState(lessonState) {
   state.title = lessonState.title;
+  state.analysisTargetDepth = normalizeAnalysisTargetDepth(lessonState.analysisTargetDepth);
   state.boardOrientation = lessonState.boardOrientation;
   state.activeTab = lessonState.activeTab;
   state.setup.advancedOpen = lessonState.advancedOpen;
   state.toolsExpanded = Boolean(lessonState.toolsExpanded);
+  state.pgnCommentsVisible = lessonState.pgnCommentsVisible !== false;
   state.pvLinesVisible = lessonState.pvLinesVisible !== false;
   state.setup.armedPiece = null;
   state.setup.pieces = lessonState.setup.pieces;
@@ -1268,6 +1577,7 @@ function applyLessonState(lessonState) {
   state.setup.fenInput = lessonState.setupFen;
   state.setup.fenError = '';
   state.note = normalizeNoteState(lessonState.note);
+  state.practice = createEmptyPracticeState();
   state.annotations.enabled = false;
   state.annotations.paintedSquares = new Set(lessonState.annotations?.paintedSquares || []);
   state.annotations.circledSquares = new Set(lessonState.annotations?.circledSquares || []);
@@ -1284,16 +1594,19 @@ function hydrateDraft() {
   }
   try {
     const draft = JSON.parse(raw);
+    state.practicePreferenceKind = normalizePracticeKind(draft?.practiceKindPreference);
     if (draft && typeof draft === 'object' && !Array.isArray(draft) && draft.nodes && draft.rootId) {
       applyLessonState(validateAndNormalizeLessonPayload(draft));
       return;
     }
 
     const title = typeof draft?.title === 'string' ? draft.title : DEFAULT_TITLE;
+    const analysisTargetDepth = normalizeAnalysisTargetDepth(draft?.analysisTargetDepth);
     const boardOrientation = draft?.boardOrientation === 'black' ? 'black' : 'white';
     const activeTab = [TAB_SETUP, TAB_ANALYSIS, TAB_PGN].includes(draft?.activeTab) ? draft.activeTab : TAB_PGN;
     const advancedOpen = Boolean(draft?.advancedOpen);
     const toolsExpanded = Boolean(draft?.toolsExpanded);
+    const pgnCommentsVisible = draft?.pgnCommentsVisible !== false;
     const pvLinesVisible = draft?.pvLinesVisible !== false;
     const normalizedSetup = normalizeSetupFenForLesson(typeof draft?.setupFen === 'string' ? draft.setupFen : DEFAULT_POSITION);
     const analysisHistory = Array.isArray(draft?.analysisHistory)
@@ -1312,10 +1625,12 @@ function hydrateDraft() {
 
     applyLessonState({
       title,
+      analysisTargetDepth,
       boardOrientation,
       activeTab,
       advancedOpen,
       toolsExpanded,
+      pgnCommentsVisible,
       pvLinesVisible,
       setupFen: normalizedSetup.setupFen,
       setup: normalizedSetup.setup,
@@ -1328,10 +1643,8 @@ function hydrateDraft() {
   }
 }
 
-function saveLessonFile() {
-  const payload = buildLessonPayload();
-  const fileName = `${slugifyLessonTitle(state.title)}.lesson.json`;
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+function downloadTextFile(fileName, text, mimeType) {
+  const blob = new Blob([text], { type: mimeType });
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -1340,6 +1653,12 @@ function saveLessonFile() {
   link.click();
   link.remove();
   window.setTimeout(() => window.URL.revokeObjectURL(url), 0);
+}
+
+function saveLessonFile() {
+  const payload = buildLessonPayload();
+  const fileName = `${slugifyLessonTitle(state.title)}.lesson.json`;
+  downloadTextFile(fileName, JSON.stringify(payload, null, 2), 'application/json');
   syncLessonFileStatus(`Saved ${fileName}.`);
 }
 
@@ -1362,6 +1681,58 @@ async function openLessonFile(file) {
   renderAll();
   schedulePersist();
   syncLessonFileStatus(`Loaded ${file.name}.`);
+}
+
+function buildLessonStateFromImportedPgn(importedPgn) {
+  const normalizedSetup = normalizeSetupFenForLesson(String(importedPgn?.setupFen || DEFAULT_POSITION).trim());
+  const analysis = validateAndNormalizeLessonNodes(
+    importedPgn?.analysis?.nodes,
+    String(importedPgn?.analysis?.rootId || ROOT_NODE_ID).trim() || ROOT_NODE_ID,
+    String(importedPgn?.analysis?.currentNodeId || ROOT_NODE_ID).trim() || ROOT_NODE_ID,
+    normalizedSetup.setupFen,
+  );
+
+  return {
+    title: typeof importedPgn?.title === 'string' ? importedPgn.title : DEFAULT_TITLE,
+    analysisTargetDepth: currentAnalysisTargetDepth(),
+    boardOrientation: state.boardOrientation,
+    activeTab: TAB_PGN,
+    advancedOpen: false,
+    toolsExpanded: true,
+    pvLinesVisible: state.pvLinesVisible,
+    setupFen: normalizedSetup.setupFen,
+    setup: normalizedSetup.setup,
+    analysis,
+    annotations: normalizeAnnotationState(null),
+    note: normalizeNoteState({ text: '', expanded: state.note.expanded }),
+  };
+}
+
+function savePgnFile() {
+  const fileName = `${slugifyLessonTitle(state.title)}.pgn`;
+  const pgnText = buildPgnFromLessonTree({
+    title: state.title,
+    setupFen: state.setupFen,
+    rootId: state.analysis.rootId,
+    nodes: state.analysis.nodes,
+  });
+  downloadTextFile(fileName, pgnText, 'application/x-chess-pgn');
+  syncLessonFileStatus(`Exported ${fileName}.`);
+}
+
+async function openPgnFile(file) {
+  if (!file) {
+    return;
+  }
+
+  const text = await file.text();
+  const importedPgn = parsePgnToLessonTree(text);
+  const lessonState = buildLessonStateFromImportedPgn(importedPgn);
+  applyLessonState(lessonState);
+  syncAnalysisGameFromTree();
+  renderAll();
+  schedulePersist();
+  syncLessonFileStatus(`Imported ${file.name}.`);
 }
 
 function commitSetupState(pieces, meta, options = {}) {
@@ -1532,8 +1903,9 @@ function resetAnalysisOutput(options = {}) {
   state.engine.stopping = false;
   state.engine.searchFen = '';
   state.engine.pendingFen = '';
-  state.engine.resumeFen = '';
-  state.engine.resumeEligible = false;
+  state.engine.searchMode = '';
+  state.engine.pendingSearchMode = '';
+  clearEngineContinuationState();
   state.engine.summary = summary;
   state.engine.evalRailVisible = true;
   clearEngineSearchData();
@@ -1595,12 +1967,16 @@ function syncAnalysisGameFromTree(options = {}) {
     state.analysis.lastMoveSquares = [];
     state.analysis.boardMessage = 'Select a piece belonging to the side to move.';
   }
+  if (state.practice.active) {
+    syncPracticeBoardMessage();
+  }
   if (resetEngine) {
     resetAnalysisOutput({ summary: defaultAnalysisSummary() });
   }
 }
 
-function jumpToAnalysisNode(nodeId) {
+function jumpToAnalysisNode(nodeId, options = {}) {
+  const { syncSelection = true } = options;
   const nextNode = getAnalysisNode(nodeId);
   if (!nextNode) {
     return;
@@ -1608,7 +1984,9 @@ function jumpToAnalysisNode(nodeId) {
   if (state.activeTab === TAB_SETUP && countAnalysisMoveNodes()) {
     state.activeTab = TAB_PGN;
   }
-  applyAnalysisPathSelection(nodeId);
+  if (syncSelection) {
+    applyAnalysisPathSelection(nodeId);
+  }
   state.analysis.currentNodeId = nodeId;
   syncAnalysisGameFromTree();
   schedulePersist();
@@ -1616,10 +1994,16 @@ function jumpToAnalysisNode(nodeId) {
 }
 
 function navigateToAnalysisStart() {
+  if (state.practice.active) {
+    return;
+  }
   jumpToAnalysisNode(state.analysis.rootId);
 }
 
 function navigateToAnalysisParent() {
+  if (state.practice.active) {
+    return;
+  }
   const currentNode = getCurrentAnalysisNode();
   if (!currentNode?.parentId) {
     return;
@@ -1628,6 +2012,9 @@ function navigateToAnalysisParent() {
 }
 
 function navigateToAnalysisForward() {
+  if (state.practice.active) {
+    return;
+  }
   const nextNodeId = getAnalysisNextNodeId();
   if (!nextNodeId) {
     return;
@@ -1636,6 +2023,9 @@ function navigateToAnalysisForward() {
 }
 
 function navigateToAnalysisEnd() {
+  if (state.practice.active) {
+    return;
+  }
   let cursorId = state.analysis.currentNodeId;
   let nextNodeId = getAnalysisNextNodeId(cursorId);
   if (!nextNodeId) {
@@ -1652,12 +2042,220 @@ function navigateToAnalysisEnd() {
 
 function resetAnalysisToSetup(options = {}) {
   const { keepTab = true } = options;
+  state.practice = createEmptyPracticeState();
   assignAnalysisTree(createEmptyAnalysisTree(state.setupFen));
   syncAnalysisGameFromTree();
+  state.engine.evalRailVisible = true;
   if (!keepTab) {
     state.activeTab = TAB_ANALYSIS;
   }
   schedulePersist();
+}
+
+function setPracticeFeedback(message, kind = 'warning') {
+  state.practice.feedback = String(message || '');
+  state.practice.feedbackKind = kind;
+}
+
+function practiceMoveMatchesExpectedNode(move, expectedNode) {
+  return Boolean(
+    move
+    && expectedNode
+    && move.from === expectedNode.from
+    && move.to === expectedNode.to
+    && normalizePromotionValue(move.promotion) === normalizePromotionValue(expectedNode.promotion),
+  );
+}
+
+function formatPracticeMoveLabel(move) {
+  if (!move) {
+    return 'that move';
+  }
+  const from = String(move.from || '').trim().toLowerCase();
+  const to = String(move.to || '').trim().toLowerCase();
+  const promotion = normalizePromotionValue(move.promotion);
+  try {
+    const replay = new Chess(state.analysis.currentFen);
+    const applied = replay.move({ from, to, promotion });
+    return applied?.san || `${from}${to}${promotion || ''}`;
+  } catch {
+    return `${from}${to}${promotion || ''}`;
+  }
+}
+
+function findMatchingPracticeNode(move) {
+  if (!move) {
+    return null;
+  }
+  return getPracticeCandidateNodes().find((candidateNode) => practiceMoveMatchesExpectedNode(move, candidateNode)) || null;
+}
+
+function practiceHintTextForNode(expectedNode) {
+  if (!expectedNode) {
+    return 'No hint is available for this position.';
+  }
+  if (expectedNode.san === 'O-O' || expectedNode.san === 'O-O-O') {
+    return `Hint: ${state.analysis.game?.turn() === 'b' ? 'Black' : 'White'} castles.`;
+  }
+  const piece = state.analysis.game?.get(expectedNode.from);
+  if (!piece) {
+    return `Hint: the move starts from ${expectedNode.from}.`;
+  }
+  return `Hint: ${state.analysis.game?.turn() === 'b' ? 'Black' : 'White'} ${PIECE_LABELS[piece.type.toUpperCase()]} from ${expectedNode.from}.`;
+}
+
+function practiceHintText() {
+  const candidateNodes = getPracticeCandidateNodes();
+  if (!candidateNodes.length) {
+    return 'No hint is available for this position.';
+  }
+  if (candidateNodes.length === 1) {
+    return practiceHintTextForNode(candidateNodes[0]);
+  }
+
+  const uniqueFromSquares = Array.from(new Set(candidateNodes.map((node) => node.from).filter(Boolean)));
+  if (uniqueFromSquares.length === 1) {
+    const fromSquare = uniqueFromSquares[0];
+    const piece = state.analysis.game?.get(fromSquare);
+    if (!piece) {
+      return `Hint: every recorded move starts from ${fromSquare}.`;
+    }
+    return `Hint: every recorded move starts with ${state.analysis.game?.turn() === 'b' ? 'Black' : 'White'} ${PIECE_LABELS[piece.type.toUpperCase()]} from ${fromSquare}.`;
+  }
+
+  return getPracticePreferredChildNode()
+    ? 'Hint: multiple recorded continuations are accepted here. Reveal move will follow the saved preferred branch.'
+    : 'Hint: multiple recorded continuations are accepted here.';
+}
+
+function stopPracticeSession() {
+  if (!state.practice.active) {
+    return;
+  }
+  state.practice = createEmptyPracticeState();
+  clearAnalysisSelection();
+  dismissPromotionDialog();
+  state.engine.evalRailVisible = true;
+  syncAnalysisGameFromTree({ resetEngine: false });
+  renderAll();
+}
+
+function startPracticeSession(options = {}) {
+  const practiceKind = normalizePracticeKind(options.kind ?? state.practicePreferenceKind);
+  const branchRootNodeId = String(options.branchRootNodeId || state.analysis.currentNodeId || state.analysis.rootId).trim() || state.analysis.rootId;
+  const lineNodeIds = practiceKind === PRACTICE_KIND_LINE ? buildDisplayedLineNodeIds(state.analysis.rootId) : [];
+  const branchReady = practiceKind === PRACTICE_KIND_BRANCH ? branchPracticeReady(branchRootNodeId) : false;
+  if (practiceKind === PRACTICE_KIND_LINE && lineNodeIds.length < 2) {
+    syncLessonFileStatus('Record at least one move on the selected lesson line before starting practice.');
+    renderAnalysisPanel();
+    renderPgnPanel();
+    return;
+  }
+  if (practiceKind === PRACTICE_KIND_BRANCH && !branchReady) {
+    syncLessonFileStatus('Jump to a lesson position with at least one recorded continuation before starting a branch drill.');
+    renderAnalysisPanel();
+    renderPgnPanel();
+    return;
+  }
+
+  state.practice = createEmptyPracticeState();
+  state.practice.active = true;
+  state.practice.kind = practiceKind;
+  state.practice.branchRootNodeId = practiceKind === PRACTICE_KIND_BRANCH ? branchRootNodeId : state.analysis.rootId;
+  state.practice.lineNodeIds = lineNodeIds;
+  setPracticeFeedback(
+    practiceKind === PRACTICE_KIND_BRANCH
+      ? 'Branch drill started. Recorded continuations stay hidden until you solve them.'
+      : 'Practice started. Future moves stay hidden until you solve them.',
+    'warning',
+  );
+  state.activeTab = TAB_ANALYSIS;
+  state.toolsExpanded = true;
+  clearAnalysisSelection();
+  dismissPromotionDialog();
+  resetAnalysisOutput({ keepReady: true, summary: defaultAnalysisSummary() });
+  state.engine.evalRailVisible = false;
+  state.analysis.currentNodeId = state.practice.branchRootNodeId;
+  syncAnalysisGameFromTree({ resetEngine: false });
+  schedulePersist();
+  renderAll();
+}
+
+function restartPracticeSession() {
+  startPracticeSession({
+    kind: state.practice.active ? state.practice.kind : state.practicePreferenceKind,
+    branchRootNodeId: state.practice.active ? state.practice.branchRootNodeId : state.analysis.currentNodeId,
+  });
+}
+
+function requestPracticeHint() {
+  if (!state.practice.active || practiceComplete()) {
+    return;
+  }
+  setPracticeFeedback(practiceHintText(), 'warning');
+  syncPracticeBoardMessage();
+  renderNotationPanel();
+  renderAnalysisPanel();
+  renderPgnPanel();
+}
+
+function revealPracticeMove() {
+  if (!state.practice.active) {
+    return;
+  }
+  const revealedNode = state.practice.kind === PRACTICE_KIND_BRANCH
+    ? getPracticePreferredChildNode()
+    : getPracticeExpectedNode();
+  if (!revealedNode) {
+    return;
+  }
+  state.practice.positionIndex += 1;
+  state.practice.revealedCount += 1;
+  const completesPractice = practiceWillCompleteAfterAdvance(revealedNode);
+  setPracticeFeedback(
+    completesPractice
+      ? `Revealed ${revealedNode.san}. Practice complete.`
+      : `Revealed ${revealedNode.san}. Continue with the next move.`,
+    completesPractice ? 'success' : 'warning',
+  );
+  jumpToAnalysisNode(revealedNode.id, { syncSelection: state.practice.kind !== PRACTICE_KIND_BRANCH });
+}
+
+function submitPracticeMove(move) {
+  if (!state.practice.active) {
+    applyAnalysisMove(move);
+    return;
+  }
+  clearAnalysisSelection();
+  if (practiceComplete()) {
+    setPracticeFeedback('This practice session is already complete.', 'success');
+    syncPracticeBoardMessage();
+    renderAll();
+    return;
+  }
+  const matchedNode = findMatchingPracticeNode(move);
+  if (matchedNode) {
+    state.practice.positionIndex += 1;
+    state.practice.correctCount += 1;
+    const completesPractice = practiceWillCompleteAfterAdvance(matchedNode);
+    setPracticeFeedback(
+      completesPractice
+        ? `Correct: ${matchedNode.san}. Practice complete.`
+        : `Correct: ${matchedNode.san}.`,
+      'success',
+    );
+    jumpToAnalysisNode(matchedNode.id, { syncSelection: state.practice.kind !== PRACTICE_KIND_BRANCH });
+    return;
+  }
+  state.practice.incorrectCount += 1;
+  setPracticeFeedback(
+    state.practice.kind === PRACTICE_KIND_BRANCH
+      ? `Not a recorded continuation: ${formatPracticeMoveLabel(move)}. Try again.`
+      : `Not this line: ${formatPracticeMoveLabel(move)}. Try again.`,
+    'danger',
+  );
+  syncPracticeBoardMessage();
+  renderAll();
 }
 
 function formatScoreLabel(scoreType, scoreValue) {
@@ -1720,7 +2318,10 @@ function currentAnalyzeButtonLabel() {
   if (state.engine.stopping) {
     return 'Stopping...';
   }
-  return state.engine.analyzing ? 'Stop' : 'Analyze';
+  if (state.engine.analyzing) {
+    return 'Stop';
+  }
+  return hasAnalysisContinuationAvailable() ? 'Continue' : 'Analyze';
 }
 
 function currentPvPlaceholderText() {
@@ -1731,7 +2332,18 @@ function currentPvPlaceholderText() {
     return 'Stopping analysis...';
   }
   if (state.engine.analyzing) {
-    return 'Waiting for engine line...';
+    if (state.engine.searchMode === ENGINE_SEARCH_MODE_CONTINUE) {
+      return Number.isFinite(state.engine.searchTargetDepth)
+        ? `Continuing analysis past depth ${state.engine.searchTargetDepth}...`
+        : 'Continuing analysis from the current board position...';
+    }
+    const targetDepth = Number.isFinite(state.engine.searchTargetDepth)
+      ? state.engine.searchTargetDepth
+      : currentAnalysisTargetDepth();
+    if (!state.engine.depth) {
+      return `Stockfish is starting deep analysis toward depth ${targetDepth}...`;
+    }
+    return `Stockfish is computing 3 variations toward depth ${targetDepth}...`;
   }
   return 'No principal variation yet.';
 }
@@ -1748,6 +2360,7 @@ function renderPvLineListMarkup() {
         <div class="pv-line ${entry.line ? '' : 'is-empty'}">
           <div class="pv-line-head">
             <span class="pv-line-index">PV ${entry.index}</span>
+            <span class="pv-line-depth">Depth ${entry.depth ?? '—'}</span>
             <span class="pv-line-score">${escapeHtml(entry.evalLabel || 'Pending')}</span>
           </div>
           <div class="pv-line-text">${escapeHtml(entry.line || emptyText)}</div>
@@ -1831,6 +2444,67 @@ function uciMovesToSan(fen, moves) {
   }
 }
 
+async function stockfishAssetExists(path) {
+  try {
+    const response = await window.fetch(new URL(path, import.meta.url), {
+      method: 'HEAD',
+      cache: 'no-store',
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function isStockfishBundleInstalled(candidate) {
+  const [workerExists, wasmExists] = await Promise.all([
+    stockfishAssetExists(candidate.workerPath),
+    stockfishAssetExists(candidate.wasmPath),
+  ]);
+  return workerExists && wasmExists;
+}
+
+async function resolveStockfishBundleCandidate() {
+  let sawThreadedOnlyInstall = false;
+  for (const candidate of ENGINE_BUNDLE_CANDIDATES) {
+    if (!await isStockfishBundleInstalled(candidate)) {
+      continue;
+    }
+    if (!candidate.requiresCrossOriginIsolation || window.crossOriginIsolated) {
+      return candidate;
+    }
+    sawThreadedOnlyInstall = true;
+  }
+  if (sawThreadedOnlyInstall && !window.crossOriginIsolated) {
+    throw new Error('A multi-threaded Stockfish bundle is installed, but this server is missing the headers it needs. Run python local_server.py or install a single-threaded bundle.');
+  }
+  throw new Error('No supported Stockfish browser bundle was found in vendor/stockfish/. Add a stockfish-18-*.js/.wasm pair there.');
+}
+
+function terminateEngineWorker() {
+  if (!state.engine.worker) {
+    return;
+  }
+  state.engine.worker.removeEventListener('message', handleWorkerMessage);
+  state.engine.worker.removeEventListener('error', handleWorkerError);
+  state.engine.worker.terminate();
+  state.engine.worker = null;
+}
+
+async function createStockfishWorker() {
+  const candidate = await resolveStockfishBundleCandidate();
+  state.engine.bundleId = candidate.id;
+  state.engine.bundleLabel = candidate.label;
+  state.engine.bundlePath = candidate.workerPath;
+  state.engine.summary = `Loading Stockfish (${candidate.label})...`;
+  renderAnalysisPanel();
+  renderHeaderMeta();
+  const worker = new Worker(new URL(candidate.workerPath, import.meta.url));
+  worker.addEventListener('message', handleWorkerMessage);
+  worker.addEventListener('error', handleWorkerError);
+  return worker;
+}
+
 function clearEngineReadyHandshake() {
   if (state.engine.readyTimer) {
     window.clearTimeout(state.engine.readyTimer);
@@ -1842,15 +2516,14 @@ function clearEngineReadyHandshake() {
 }
 
 function handleWorkerError(event) {
-  const message = event?.message || 'Stockfish worker failed to start.';
+  const message = event?.message || (state.engine.bundleLabel
+    ? `Stockfish (${state.engine.bundleLabel}) worker failed to start.`
+    : 'Stockfish worker failed to start.');
   if (state.engine.rejectReady) {
     state.engine.rejectReady(new Error(message));
   }
   clearEngineReadyHandshake();
-  if (state.engine.worker) {
-    state.engine.worker.terminate();
-    state.engine.worker = null;
-  }
+  terminateEngineWorker();
   resetAnalysisOutput({ keepReady: false, summary: message });
   renderAll();
 }
@@ -1895,6 +2568,7 @@ function handleWorkerMessage(event) {
     state.engine.pvLines[pvIndex] = {
       index: info.multipv,
       line: sanLine.length ? sanLine.join(' ') : '',
+      depth: Number.isFinite(info.depth) ? info.depth : existingLine.depth,
       scoreType: normalizedScore.scoreType || existingLine.scoreType,
       scoreValue: Number.isFinite(normalizedScore.scoreValue) ? normalizedScore.scoreValue : existingLine.scoreValue,
       evalLabel: nextEvalLabel,
@@ -1904,7 +2578,13 @@ function handleWorkerMessage(event) {
       state.engine.scoreValue = normalizedScore.scoreValue;
       state.engine.evalLabel = nextEvalLabel;
     }
-    const summaryBits = ['Analyzing current board'];
+    const summaryBits = [
+      state.engine.searchMode === ENGINE_SEARCH_MODE_CONTINUE
+        ? (Number.isFinite(state.engine.searchTargetDepth)
+            ? `Continuing past depth ${state.engine.searchTargetDepth}`
+            : 'Continuing analysis')
+        : `Analyzing toward depth ${state.engine.searchTargetDepth ?? currentAnalysisTargetDepth()}`,
+    ];
     if (Number.isFinite(state.engine.depth)) {
       summaryBits.push(`Depth ${state.engine.depth}`);
     }
@@ -1921,9 +2601,15 @@ function handleWorkerMessage(event) {
   }
   if (line.startsWith('bestmove ')) {
     if (state.engine.pendingFen && state.engine.worker) {
+      const pendingSearchMode = state.engine.pendingSearchMode || ENGINE_SEARCH_MODE_CHECKPOINT;
       startEngineSearch(state.engine.worker, state.engine.pendingFen, {
         preserveDisplay: true,
         freshGame: true,
+        searchMode: pendingSearchMode,
+        targetDepth: pendingSearchMode === ENGINE_SEARCH_MODE_CHECKPOINT ? currentAnalysisTargetDepth() : null,
+        summary: pendingSearchMode === ENGINE_SEARCH_MODE_CONTINUE
+          ? 'Continuing analysis from the current board position...'
+          : `Analyzing current board position toward depth ${currentAnalysisTargetDepth()}...`,
       });
       return;
     }
@@ -1931,20 +2617,51 @@ function handleWorkerMessage(event) {
       return;
     }
     const stoppedFen = state.engine.searchFen;
+    const completedMode = state.engine.searchMode;
+    const targetDepth = state.engine.searchTargetDepth;
+    const wasStopping = state.engine.stopping;
     const tokens = line.split(/\s+/);
     state.engine.analyzing = false;
     state.engine.stopping = false;
     state.engine.pendingFen = '';
+    state.engine.pendingSearchMode = '';
     state.engine.bestMove = tokens[1] || '';
-    if (state.engine.bestMove && state.engine.bestMove !== '(none)') {
+    const hasBestMove = Boolean(state.engine.bestMove && state.engine.bestMove !== '(none)');
+    if (hasBestMove) {
       const san = uciMovesToSan(stoppedFen, [state.engine.bestMove])[0] || state.engine.bestMove;
-      state.engine.summary = `Search stopped. Best move: ${san}.`;
+      if (completedMode === ENGINE_SEARCH_MODE_CHECKPOINT && !wasStopping) {
+        const completedDepth = Number.isFinite(state.engine.depth) ? state.engine.depth : targetDepth;
+        state.engine.summary = Number.isFinite(completedDepth)
+          ? `Analysis complete at depth ${completedDepth}. Best move: ${san}.`
+          : `Analysis complete. Best move: ${san}.`;
+        state.engine.resumeFen = stoppedFen;
+        state.engine.resumeDepth = Number.isFinite(targetDepth)
+          ? targetDepth
+          : (Number.isFinite(state.engine.depth) ? state.engine.depth : currentAnalysisTargetDepth());
+        state.engine.resumeEligible = Boolean(stoppedFen && state.engine.ready && state.engine.worker);
+      } else if (completedMode === ENGINE_SEARCH_MODE_CHECKPOINT && Number.isFinite(targetDepth)) {
+        state.engine.summary = Number.isFinite(state.engine.depth)
+          ? `Search stopped at depth ${state.engine.depth} before target ${targetDepth}. Best move: ${san}.`
+          : `Search stopped before target ${targetDepth}. Best move: ${san}.`;
+        clearEngineContinuationState();
+      } else if (completedMode === ENGINE_SEARCH_MODE_CONTINUE) {
+        state.engine.summary = Number.isFinite(state.engine.depth)
+          ? `Search stopped at depth ${state.engine.depth}. Best move: ${san}.`
+          : `Search stopped. Best move: ${san}.`;
+        clearEngineContinuationState();
+      } else {
+        state.engine.summary = `Search stopped. Best move: ${san}.`;
+        clearEngineContinuationState();
+      }
     } else {
-      state.engine.summary = 'Search finished. No legal moves are available in this position.';
+      state.engine.summary = completedMode === ENGINE_SEARCH_MODE_CHECKPOINT && !wasStopping
+        ? 'Analysis complete. No legal moves are available in this position.'
+        : 'Search finished. No legal moves are available in this position.';
+      clearEngineContinuationState();
     }
-    state.engine.resumeFen = stoppedFen;
-    state.engine.resumeEligible = Boolean(stoppedFen && state.engine.ready && state.engine.worker);
     state.engine.searchFen = '';
+    state.engine.searchMode = '';
+    state.engine.searchTargetDepth = null;
     renderNotationPanel();
     renderAnalysisPanel();
     renderHeaderMeta();
@@ -1969,24 +2686,23 @@ async function ensureStockfishReady() {
     state.engine.rejectReady = reject;
     state.engine.readyTimer = window.setTimeout(() => {
       if (state.engine.worker && !state.engine.ready) {
-        state.engine.worker.terminate();
-        state.engine.worker = null;
+        terminateEngineWorker();
       }
       reject(new Error('Stockfish readiness timed out.'));
       clearEngineReadyHandshake();
-    }, 15000);
-    try {
-      if (!state.engine.worker) {
-        state.engine.worker = new Worker(new URL('./vendor/stockfish/stockfish-18-lite-single.js', import.meta.url));
-        state.engine.worker.addEventListener('message', handleWorkerMessage);
-        state.engine.worker.addEventListener('error', handleWorkerError);
+    }, ENGINE_READY_TIMEOUT_MS);
+    void (async () => {
+      try {
+        if (!state.engine.worker) {
+          state.engine.worker = await createStockfishWorker();
+        }
+        state.engine.worker.postMessage('uci');
+        state.engine.worker.postMessage('isready');
+      } catch (error) {
+        reject(error);
+        clearEngineReadyHandshake();
       }
-      state.engine.worker.postMessage('uci');
-      state.engine.worker.postMessage('isready');
-    } catch (error) {
-      reject(error);
-      clearEngineReadyHandshake();
-    }
+    })();
   }).finally(() => {
     state.engine.loading = false;
     renderAnalysisPanel();
@@ -2003,16 +2719,24 @@ function stopAnalysisSearch({ clearSummary = false, hideEvalRail = clearSummary 
   state.engine.stopping = false;
   state.engine.searchFen = '';
   state.engine.pendingFen = '';
+  state.engine.searchMode = '';
+  state.engine.pendingSearchMode = '';
+  clearEngineContinuationState();
   if (clearSummary) {
     state.engine.summary = defaultAnalysisSummary();
-    state.engine.resumeFen = '';
-    state.engine.resumeEligible = false;
     clearEngineSearchData();
   }
-  state.engine.evalRailVisible = true;
+  state.engine.evalRailVisible = !hideEvalRail;
 }
 
 async function toggleAnalysis() {
+  if (state.practice.active) {
+    state.engine.summary = 'Stop practice mode before re-enabling Stockfish.';
+    renderNotationPanel();
+    renderAnalysisPanel();
+    renderHeaderMeta();
+    return;
+  }
   if (!state.analysis.game) {
     state.engine.summary = defaultAnalysisSummary();
     renderNotationPanel();
@@ -2023,6 +2747,7 @@ async function toggleAnalysis() {
   if (state.engine.analyzing) {
     state.engine.stopping = true;
     state.engine.pendingFen = '';
+    state.engine.pendingSearchMode = '';
     state.engine.summary = 'Stopping Stockfish search...';
     renderNotationPanel();
     renderAnalysisPanel();
@@ -2035,34 +2760,40 @@ async function toggleAnalysis() {
   try {
     state.engine.evalRailVisible = true;
     const currentFen = state.analysis.currentFen;
+    const continuationRequested = hasAnalysisContinuationAvailable();
+    const continuationDepth = Number.isFinite(state.engine.resumeDepth) ? state.engine.resumeDepth : null;
     const requestedWarmRestart = Boolean(
-      state.engine.resumeEligible
+      continuationRequested
       && state.engine.worker
       && state.engine.ready
-      && state.engine.resumeFen === currentFen,
     );
-    if (requestedWarmRestart) {
-      state.engine.summary = 'Continuing analysis from the current board position...';
+    if (continuationRequested) {
+      state.engine.summary = state.engine.ready
+        ? (Number.isFinite(continuationDepth)
+            ? `Continuing analysis past depth ${continuationDepth}...`
+            : 'Continuing analysis from the current board position...')
+        : 'Loading Stockfish engine...';
     } else {
       clearEngineSearchData();
-      state.engine.summary = state.engine.ready ? 'Preparing Stockfish search...' : 'Loading Stockfish engine...';
+      state.engine.summary = state.engine.ready
+        ? `Analyzing current board position toward depth ${currentAnalysisTargetDepth()}...`
+        : 'Loading Stockfish engine...';
     }
     renderNotationPanel();
     renderBoard();
     renderAnalysisPanel();
     const worker = await ensureStockfishReady();
-    const canWarmRestart = Boolean(
-      requestedWarmRestart
-      && worker === state.engine.worker
-      && state.engine.resumeEligible
-      && state.engine.resumeFen === currentFen,
-    );
+    const canWarmRestart = Boolean(requestedWarmRestart && worker === state.engine.worker);
     startEngineSearch(worker, currentFen, {
-      preserveDisplay: canWarmRestart,
+      preserveDisplay: continuationRequested,
       freshGame: !canWarmRestart,
-      summary: canWarmRestart
-        ? 'Continuing analysis from the current board position...'
-        : 'Analyzing current board position...',
+      searchMode: continuationRequested ? ENGINE_SEARCH_MODE_CONTINUE : ENGINE_SEARCH_MODE_CHECKPOINT,
+      targetDepth: continuationRequested ? continuationDepth : currentAnalysisTargetDepth(),
+      summary: continuationRequested
+        ? (Number.isFinite(continuationDepth)
+            ? `Continuing analysis past depth ${continuationDepth}...`
+            : 'Continuing analysis from the current board position...')
+        : `Analyzing current board position toward depth ${currentAnalysisTargetDepth()}...`,
     });
   } catch (error) {
     state.engine.ready = false;
@@ -2070,8 +2801,9 @@ async function toggleAnalysis() {
     state.engine.stopping = false;
     state.engine.searchFen = '';
     state.engine.pendingFen = '';
-    state.engine.resumeFen = '';
-    state.engine.resumeEligible = false;
+    state.engine.searchMode = '';
+    state.engine.pendingSearchMode = '';
+    clearEngineContinuationState();
     state.engine.evalRailVisible = true;
     clearEngineSearchData();
     state.engine.summary = error?.message || 'Failed to start Stockfish.';
@@ -2133,6 +2865,7 @@ function applyAnalysisMove(move) {
       fen: state.analysis.game.fen(),
       children: [],
       selectedChildId: null,
+      comment: '',
     };
     currentNode.children.push(nodeId);
     currentNode.selectedChildId = nodeId;
@@ -2151,9 +2884,10 @@ function applyAnalysisMove(move) {
   renderAll();
 }
 
-function openPromotionDialog(moves) {
+function openPromotionDialog(moves, mode = 'analysis') {
   state.analysis.pendingPromotion = {
     moves,
+    mode,
   };
   renderPromotionModal();
 }
@@ -2168,9 +2902,14 @@ function choosePromotion(promotion) {
     return;
   }
   const chosenMove = state.analysis.pendingPromotion.moves.find((move) => move.promotion === promotion);
+  const mode = state.analysis.pendingPromotion.mode || 'analysis';
   dismissPromotionDialog();
   if (chosenMove) {
-    applyAnalysisMove(chosenMove);
+    if (mode === 'practice') {
+      submitPracticeMove(chosenMove);
+    } else {
+      applyAnalysisMove(chosenMove);
+    }
   }
 }
 
@@ -2190,10 +2929,10 @@ function handleAnalysisSquareClick(square) {
     if (matchingMoves.length) {
       const promotions = Array.from(new Set(matchingMoves.map((move) => move.promotion).filter(Boolean)));
       if (promotions.length > 1) {
-        openPromotionDialog(matchingMoves);
+        openPromotionDialog(matchingMoves, state.practice.active ? 'practice' : 'analysis');
         return;
       }
-      applyAnalysisMove(matchingMoves[0]);
+      submitPracticeMove(matchingMoves[0]);
       return;
     }
   }
@@ -2240,6 +2979,9 @@ function currentTurnLabel() {
 }
 
 function currentContextLabel() {
+  if (state.practice.active) {
+    return 'Practice board';
+  }
   if (state.activeTab === TAB_SETUP) {
     return 'Setup editor';
   }
@@ -2581,17 +3323,24 @@ function renderBoard() {
   renderAnnotationOverlay();
   syncBoardSize();
 
-  dom.evalBadgeWrap.classList.remove('is-hidden');
-  dom.evalBarWrap.classList.remove('is-hidden');
-  dom.evalBadgeWrap.setAttribute('aria-hidden', 'false');
-  dom.evalBarWrap.setAttribute('aria-hidden', 'false');
-  dom.evalBarWrap.dataset.orientation = state.boardOrientation;
-  dom.evalBadge.textContent = state.engine.evalLabel || '0.00';
-  const whiteFraction = Number.isFinite(state.engine.scoreValue)
-    ? scoreToWhiteFraction(state.engine.scoreType, state.engine.scoreValue)
-    : 0.5;
-  dom.evalBarWhite.style.height = `${(whiteFraction * 100).toFixed(1)}%`;
-  dom.evalBarWhite.style.width = '100%';
+  if (state.engine.evalRailVisible) {
+    dom.evalBadgeWrap.classList.remove('is-hidden');
+    dom.evalBarWrap.classList.remove('is-hidden');
+    dom.evalBadgeWrap.setAttribute('aria-hidden', 'false');
+    dom.evalBarWrap.setAttribute('aria-hidden', 'false');
+    dom.evalBarWrap.dataset.orientation = state.boardOrientation;
+    dom.evalBadge.textContent = state.engine.evalLabel || '0.00';
+    const whiteFraction = Number.isFinite(state.engine.scoreValue)
+      ? scoreToWhiteFraction(state.engine.scoreType, state.engine.scoreValue)
+      : 0.5;
+    dom.evalBarWhite.style.height = `${(whiteFraction * 100).toFixed(1)}%`;
+    dom.evalBarWhite.style.width = '100%';
+    return;
+  }
+  dom.evalBadgeWrap.classList.add('is-hidden');
+  dom.evalBarWrap.classList.add('is-hidden');
+  dom.evalBadgeWrap.setAttribute('aria-hidden', 'true');
+  dom.evalBarWrap.setAttribute('aria-hidden', 'true');
 }
 
 function syncBoardSize() {
@@ -2625,21 +3374,27 @@ function syncBoardSize() {
 
 function renderHeaderMeta() {
   const setupSummary = currentSetupSummary();
-  const engineLabel = state.engine.loading
-    ? 'Stockfish loading'
-    : state.engine.analyzing
-      ? 'Stockfish live'
-      : state.engine.ready
-        ? 'Stockfish ready'
-        : 'Stockfish idle';
+  const engineLabel = state.practice.active
+    ? 'Practice mode'
+    : state.engine.loading
+      ? 'Stockfish loading'
+      : state.engine.analyzing
+        ? 'Stockfish live'
+        : state.engine.ready
+          ? 'Stockfish ready'
+          : 'Stockfish idle';
 
   dom.boardTitleDisplay.textContent = state.title.trim() || 'Untitled position';
-  dom.boardStageSubtitle.textContent = state.activeTab === TAB_SETUP
-    ? 'Build the source position on the board while keeping the setup fields synchronized.'
-    : state.activeTab === TAB_ANALYSIS
-      ? 'Play legal moves on the board while the right pane tracks evaluation and the current lesson tree.'
-      : 'Follow the lesson tree on the right and jump to any recorded branch while the board stays in view.';
-  dom.modePill.textContent = state.activeTab === TAB_SETUP ? 'Setup' : state.activeTab === TAB_ANALYSIS ? 'Analysis' : 'Line';
+  dom.boardStageSubtitle.textContent = state.practice.active
+    ? state.practice.kind === PRACTICE_KIND_BRANCH
+      ? 'Solve any recorded continuation from the current lesson branch without seeing future moves or engine output.'
+      : 'Solve the next move from the selected lesson line without seeing future moves or engine output.'
+    : state.activeTab === TAB_SETUP
+      ? 'Build the source position on the board while keeping the setup fields synchronized.'
+      : state.activeTab === TAB_ANALYSIS
+        ? 'Play legal moves on the board while the right pane tracks evaluation and the current lesson tree.'
+        : 'Follow the lesson tree on the right and jump to any recorded branch while the board stays in view.';
+  dom.modePill.textContent = state.practice.active ? 'Practice' : state.activeTab === TAB_SETUP ? 'Setup' : state.activeTab === TAB_ANALYSIS ? 'Analysis' : 'Line';
   dom.validityPill.textContent = state.activeTab === TAB_SETUP ? setupSummary.title : engineLabel;
   dom.validityPill.className = `pill ${state.activeTab === TAB_SETUP && setupSummary.kind === 'success' ? 'pill-primary' : ''}`.trim();
   dom.boardContextLabel.textContent = currentContextLabel();
@@ -2651,7 +3406,7 @@ function renderHeaderMeta() {
   dom.engineReadyLabel.textContent = engineLabel;
   if (dom.headerAnalyzeButton) {
     dom.headerAnalyzeButton.textContent = currentAnalyzeButtonLabel();
-    dom.headerAnalyzeButton.disabled = !state.analysis.game || state.engine.loading || state.engine.stopping;
+    dom.headerAnalyzeButton.disabled = state.practice.active || !state.analysis.game || state.engine.loading || state.engine.stopping;
     dom.headerAnalyzeButton.classList.toggle('primary', !state.engine.analyzing && !state.engine.stopping);
     dom.headerAnalyzeButton.classList.toggle('danger', state.engine.analyzing || state.engine.stopping);
     dom.headerAnalyzeButton.setAttribute('aria-pressed', state.engine.analyzing ? 'true' : 'false');
@@ -2673,7 +3428,104 @@ function renderHeroBanner() {
   `;
 }
 
+function commentPreviewText(comment) {
+  const normalized = normalizeAnalysisComment(comment).replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return '';
+  }
+  return normalized.length > 140
+    ? `${normalized.slice(0, 137).trimEnd()}...`
+    : normalized;
+}
+
+function renderNotationInlineComment(comment) {
+  if (!state.pgnCommentsVisible) {
+    return '';
+  }
+  const preview = commentPreviewText(comment);
+  if (!preview) {
+    return '';
+  }
+  return `<span class="notation-inline-comment">{${escapeHtml(preview)}}</span>`;
+}
+
+function currentAnalysisCommentContext() {
+  const currentNode = getCurrentAnalysisNode() || getAnalysisNode(state.analysis.rootId);
+  if (!currentNode || currentNode.id === state.analysis.rootId) {
+    return {
+      copy: 'Saved in PGN before the first move.',
+      value: currentNode?.comment || '',
+    };
+  }
+  return {
+    copy: `Saved in PGN after ${currentNode.san}.`,
+    value: currentNode.comment || '',
+  };
+}
+
+function renderNotationRootComment() {
+  if (!state.pgnCommentsVisible) {
+    return '';
+  }
+  const rootNode = getAnalysisNode(state.analysis.rootId);
+  const preview = commentPreviewText(rootNode?.comment);
+  if (!preview) {
+    return '';
+  }
+  return `
+    <div class="notation-root-comment">
+      <span class="notation-inline-comment">{${escapeHtml(preview)}}</span>
+    </div>
+  `;
+}
+
+function renderNotationCommentEditor() {
+  if (!state.pgnCommentsVisible) {
+    return '';
+  }
+  const commentState = currentAnalysisCommentContext();
+  return `
+    <section class="notation-note" aria-label="PGN comment">
+      <div class="notation-note-head">
+        <div>
+          <h3 class="notation-note-title">PGN comment</h3>
+          <p class="notation-note-copy">${escapeHtml(commentState.copy)}</p>
+        </div>
+      </div>
+      <div>
+        <label class="sr-only" for="notationCommentInput">PGN comment</label>
+        <textarea
+          id="notationCommentInput"
+          class="field-textarea notation-note-input"
+          placeholder="Add a PGN comment for this position..."
+          spellcheck="true"
+        >${escapeHtml(commentState.value)}</textarea>
+      </div>
+    </section>
+  `;
+}
+
 function renderNotationMoveToken(node, forceLeadingNumber = false) {
+  const ply = getAnalysisPly(node.id);
+  const isBlackMove = isBlackMoveForPly(ply);
+  const inlineCommentMarkup = renderNotationInlineComment(node.comment);
+  let moveNumberMarkup = '';
+
+  if (!isBlackMove) {
+    moveNumberMarkup = `<span class="notation-move-number">${moveNumberForPly(ply)}.</span>`;
+  } else if (forceLeadingNumber) {
+    moveNumberMarkup = `<span class="notation-move-number">${moveNumberForPly(ply)}...</span>`;
+  }
+
+  return `${moveNumberMarkup}<button
+      type="button"
+      class="notation-move ${state.analysis.currentNodeId === node.id ? 'is-current' : ''}"
+      data-action="jump-node"
+      data-node-id="${node.id}"
+    >${escapeHtml(node.san)}</button>${inlineCommentMarkup ? ` ${inlineCommentMarkup}` : ''}`;
+}
+
+function renderNotationStaticMoveToken(node, forceLeadingNumber = false) {
   const ply = getAnalysisPly(node.id);
   const isBlackMove = isBlackMoveForPly(ply);
   let moveNumberMarkup = '';
@@ -2684,15 +3536,7 @@ function renderNotationMoveToken(node, forceLeadingNumber = false) {
     moveNumberMarkup = `<span class="notation-move-number">${moveNumberForPly(ply)}...</span>`;
   }
 
-  return `
-    ${moveNumberMarkup}
-    <button
-      type="button"
-      class="notation-move ${state.analysis.currentNodeId === node.id ? 'is-current' : ''}"
-      data-action="jump-node"
-      data-node-id="${node.id}"
-    >${escapeHtml(node.san)}</button>
-  `;
+  return `${moveNumberMarkup}<span class="notation-move ${state.analysis.currentNodeId === node.id ? 'is-current' : ''}">${escapeHtml(node.san)}</span>`;
 }
 
 function renderNotationVariation(parentId, childId) {
@@ -2764,6 +3608,9 @@ function renderNotationBranchSequence(parentId, options = {}) {
 }
 
 function notationSummaryText() {
+  if (state.practice.active) {
+    return currentPracticePrompt();
+  }
   if (!countAnalysisMoveNodes()) {
     return 'Play moves on the board to build the lesson tree.';
   }
@@ -2800,6 +3647,9 @@ function renderNotationNote() {
 }
 
 function renderNotationPvBlock() {
+  if (state.practice.active) {
+    return '';
+  }
   if (!state.pvLinesVisible) {
     return '';
   }
@@ -2819,6 +3669,62 @@ function renderNotationPvBlock() {
   `;
 }
 
+function renderPracticeStatusGridMarkup() {
+  return `
+    <div class="status-grid">
+      <div class="status-tile">
+        <span class="status-tile-label">${practicePrimaryStatusLabel()}</span>
+        <span class="status-tile-value">${practicePrimaryStatusValue()}</span>
+      </div>
+      <div class="status-tile">
+        <span class="status-tile-label">Correct</span>
+        <span class="status-tile-value">${state.practice.correctCount}</span>
+      </div>
+      <div class="status-tile">
+        <span class="status-tile-label">Mistakes</span>
+        <span class="status-tile-value">${state.practice.incorrectCount}</span>
+      </div>
+      <div class="status-tile">
+        <span class="status-tile-label">Reveals</span>
+        <span class="status-tile-value">${state.practice.revealedCount}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderPracticeNotationBlock() {
+  if (!state.practice.active) {
+    return '';
+  }
+  const solvedNodes = getPracticeSolvedNodes();
+  let forceLeadingNumber = true;
+  const solvedMarkup = solvedNodes.length
+    ? solvedNodes.map((node) => {
+      const markup = renderNotationStaticMoveToken(node, forceLeadingNumber);
+      forceLeadingNumber = false;
+      return markup;
+    }).join(' ')
+    : '<p class="notation-empty">No moves solved yet.</p>';
+  return `
+    <section class="notation-note" aria-label="Practice mode">
+      <div class="notation-note-head">
+        <div>
+          <h3 class="notation-note-title">Practice mode</h3>
+          <p class="notation-note-copy">${escapeHtml(currentPracticePrompt())}</p>
+        </div>
+      </div>
+      ${renderPracticeStatusGridMarkup()}
+      <div class="banner ${state.practice.feedbackKind}">
+        <div>
+          <strong>${practiceComplete() ? 'Practice complete' : 'Next move hidden'}</strong>
+          <div>${escapeHtml(currentPracticeFeedback())}</div>
+        </div>
+      </div>
+      <div class="notation-text notation-line">${solvedMarkup}</div>
+    </section>
+  `;
+}
+
 function renderNotationPanel() {
   const hasHistory = countAnalysisMoveNodes() > 0;
   const currentNode = getCurrentAnalysisNode();
@@ -2826,15 +3732,27 @@ function renderNotationPanel() {
   const atEnd = !getAnalysisNextNodeId();
 
   dom.notationSummary.textContent = notationSummaryText();
-  dom.notationStartButton.disabled = !hasHistory || atStart;
-  dom.notationPrevButton.disabled = !hasHistory || atStart;
-  dom.notationNextButton.disabled = !hasHistory || atEnd;
-  dom.notationEndButton.disabled = !hasHistory || atEnd;
+  dom.notationStartButton.disabled = state.practice.active || !hasHistory || atStart;
+  dom.notationPrevButton.disabled = state.practice.active || !hasHistory || atStart;
+  dom.notationNextButton.disabled = state.practice.active || !hasHistory || atEnd;
+  dom.notationEndButton.disabled = state.practice.active || !hasHistory || atEnd;
+
+  if (state.practice.active) {
+    dom.notationPanel.innerHTML = `
+      <div class="notation-content-stack">
+        ${renderPracticeNotationBlock()}
+        ${renderNotationCommentEditor()}
+        ${renderNotationNote()}
+      </div>
+    `;
+    return;
+  }
 
   if (!hasHistory) {
     dom.notationPanel.innerHTML = `
       <div class="notation-content-stack">
         <p class="notation-empty">Play on the board to record the lesson tree.</p>
+        ${renderNotationCommentEditor()}
         ${renderNotationPvBlock()}
         ${renderNotationNote()}
       </div>
@@ -2844,7 +3762,11 @@ function renderNotationPanel() {
 
   dom.notationPanel.innerHTML = `
     <div class="notation-content-stack">
-      <div class="notation-tree">${renderNotationBranchSequence(state.analysis.rootId)}</div>
+      <div class="notation-tree">
+        ${renderNotationRootComment()}
+        ${renderNotationBranchSequence(state.analysis.rootId)}
+      </div>
+      ${renderNotationCommentEditor()}
       ${renderNotationPvBlock()}
       ${renderNotationNote()}
     </div>
@@ -2864,6 +3786,24 @@ function sideSelectorMarkup(keyPrefix, selectedValue, labels) {
       `).join('')}
     </div>
   `;
+}
+
+function practiceKindSelectorMarkup() {
+  return sideSelectorMarkup('set-practice-kind', state.practicePreferenceKind, [
+    { value: PRACTICE_KIND_LINE, label: 'Selected line' },
+    { value: PRACTICE_KIND_BRANCH, label: 'Branch drill' },
+  ]);
+}
+
+function practiceAvailabilityMessage(practiceKind) {
+  if (practiceKind === PRACTICE_KIND_BRANCH) {
+    return branchPracticeReady()
+      ? 'The session starts from the current position and accepts any recorded child move.'
+      : 'Jump to a lesson position with at least one recorded child move to start a branch drill.';
+  }
+  return selectedLinePracticeReady()
+    ? 'The session follows the displayed lesson line from the setup position.'
+    : 'Record at least one move on the selected lesson line before starting practice mode.';
 }
 
 function advancedControlsMarkup() {
@@ -3030,14 +3970,72 @@ function renderSetupPanel() {
   `;
 }
 
+function renderPracticeToolSection() {
+  const practiceReady = state.practicePreferenceKind === PRACTICE_KIND_BRANCH
+    ? branchPracticeReady()
+    : selectedLinePracticeReady();
+  if (!state.practice.active) {
+    return `
+      <article class="lesson-section">
+        <div class="lesson-section-header">
+          <div>
+            <h3 class="lesson-section-title">Practice mode</h3>
+            <p class="section-copy">Switch between a fixed selected-line drill and a branch drill that accepts any recorded continuation from the current position.</p>
+          </div>
+        </div>
+        <div class="stack-grid">
+          <div class="field-row">
+            <label class="field-label">Practice type</label>
+            ${practiceKindSelectorMarkup()}
+          </div>
+          <div class="banner ${practiceReady ? 'warning' : 'danger'}">
+            <div>
+              <strong>${practiceReady ? 'Ready to practice' : 'Practice unavailable'}</strong>
+              <div>${escapeHtml(practiceAvailabilityMessage(state.practicePreferenceKind))}</div>
+            </div>
+          </div>
+          <div class="action-row action-row-compact">
+            <button type="button" class="action-button primary" data-action="start-practice" ${practiceReady ? '' : 'disabled'}>Start practice</button>
+          </div>
+        </div>
+      </article>
+    `;
+  }
+  return `
+    <article class="lesson-section">
+      <div class="lesson-section-header">
+        <div>
+          <h3 class="lesson-section-title">Practice mode</h3>
+          <p class="section-copy">${escapeHtml(currentPracticePrompt())}</p>
+        </div>
+      </div>
+      ${renderPracticeStatusGridMarkup()}
+      <div class="stack-grid">
+        <div class="banner ${state.practice.feedbackKind}">
+          <div>
+            <strong>${practiceComplete() ? 'Practice complete' : 'Practice active'}</strong>
+            <div>${escapeHtml(currentPracticeFeedback())}</div>
+          </div>
+        </div>
+        <div class="action-row action-row-compact">
+          <button type="button" class="action-button tonal" data-action="practice-hint" ${practiceComplete() ? 'disabled' : ''}>Hint</button>
+          <button type="button" class="action-button tonal" data-action="practice-reveal" ${practiceComplete() ? 'disabled' : ''}>Reveal move</button>
+          <button type="button" class="action-button" data-action="restart-practice">Restart</button>
+          <button type="button" class="action-button danger" data-action="stop-practice">Stop practice</button>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
 function renderAnalysisPanel() {
   const hasBoard = Boolean(state.analysis.game);
-  const scoreLabel = state.engine.evalLabel || '0.00';
   const annotateButtonClass = `action-button tonal ${state.annotations.enabled ? 'is-active' : ''}`.trim();
   const analyzeButtonLabel = currentAnalyzeButtonLabel();
-  const analysisButtonDisabled = !hasBoard || state.engine.loading || state.engine.stopping;
+  const analysisButtonDisabled = state.practice.active || !hasBoard || state.engine.loading || state.engine.stopping;
+  const depthInputDisabled = state.practice.active || !hasBoard || state.engine.loading || state.engine.analyzing || state.engine.stopping;
   const analyzeButtonTone = state.engine.analyzing || state.engine.stopping ? 'danger' : 'primary';
-  const pvLineMarkup = state.pvLinesVisible ? renderPvLineListMarkup() : '';
+  const pvLineMarkup = !state.practice.active && state.pvLinesVisible ? renderPvLineListMarkup() : '';
   dom.analysisPanel.innerHTML = `
     <article class="lesson-section">
       <div class="lesson-section-header">
@@ -3054,34 +4052,63 @@ function renderAnalysisPanel() {
         <button type="button" class="${annotateButtonClass}" data-action="toggle-annotate" aria-pressed="${state.annotations.enabled ? 'true' : 'false'}">Annotate</button>
         <button type="button" class="action-button" data-action="flip-board">Flip board</button>
       </div>
+      <div class="analysis-target-depth-row">
+        <label class="field-label" for="analysisTargetDepthInput">Target depth</label>
+        <div class="analysis-target-depth-control">
+          <input
+            id="analysisTargetDepthInput"
+            class="field-input analysis-target-depth-input"
+            type="number"
+            min="${ANALYSIS_TARGET_DEPTH_MIN}"
+            max="${ANALYSIS_TARGET_DEPTH_MAX}"
+            step="1"
+            inputmode="numeric"
+            value="${currentAnalysisTargetDepth()}"
+            ${depthInputDisabled ? 'disabled' : ''}
+          >
+          <p class="analysis-target-depth-copy">Auto-stop at this checkpoint, then use Continue to resume open-ended search.</p>
+        </div>
+      </div>
 
       <div class="section-divider"></div>
 
-      <div class="status-grid">
-        <div class="status-tile">
-          <span class="status-tile-label">Evaluation</span>
-          <span class="status-tile-value">${escapeHtml(scoreLabel)}</span>
-        </div>
-        <div class="status-tile">
-          <span class="status-tile-label">Depth</span>
-          <span class="status-tile-value">${state.engine.depth ?? '—'}</span>
-        </div>
-        <div class="status-tile">
-          <span class="status-tile-label">Nodes</span>
-          <span class="status-tile-value">${escapeHtml(formatNodeCount(state.engine.nodes))}</span>
-        </div>
-      </div>
-
-      <div class="stack-grid">
-        <div class="banner ${hasBoard ? (state.engine.analyzing ? 'warning' : 'success') : 'danger'}">
-          <div>
-            <strong>${hasBoard ? 'Engine status' : 'Analysis unavailable'}</strong>
-            <div>${escapeHtml(state.engine.summary)}</div>
+      ${state.practice.active ? `
+        <div class="stack-grid">
+          <div class="banner warning">
+            <div>
+              <strong>Engine hidden</strong>
+              <div>Stockfish output is hidden while practice mode is active.</div>
+            </div>
           </div>
         </div>
-        ${pvLineMarkup}
-      </div>
+      ` : `
+        <div class="status-grid">
+          <div class="status-tile">
+            <span class="status-tile-label">Evaluation</span>
+            <span class="status-tile-value">${escapeHtml(state.engine.evalLabel || '0.00')}</span>
+          </div>
+          <div class="status-tile">
+            <span class="status-tile-label">Depth</span>
+            <span class="status-tile-value">${state.engine.depth ?? '—'}</span>
+          </div>
+          <div class="status-tile">
+            <span class="status-tile-label">Nodes</span>
+            <span class="status-tile-value">${escapeHtml(formatNodeCount(state.engine.nodes))}</span>
+          </div>
+        </div>
+
+        <div class="stack-grid">
+          <div class="banner ${hasBoard ? (state.engine.analyzing ? 'warning' : 'success') : 'danger'}">
+            <div>
+              <strong>${hasBoard ? 'Engine status' : 'Analysis unavailable'}</strong>
+              <div>${escapeHtml(state.engine.summary)}</div>
+            </div>
+          </div>
+          ${pvLineMarkup}
+        </div>
+      `}
     </article>
+    ${renderPracticeToolSection()}
   `;
 }
 
@@ -3102,7 +4129,7 @@ function renderPgnPanel() {
         </div>
       </div>
       <div class="action-row action-row-compact">
-        <button type="button" class="action-button tonal" data-action="navigate-start" ${hasBoard ? '' : 'disabled'}>Back to start</button>
+        <button type="button" class="action-button tonal" data-action="navigate-start" ${(hasBoard && !state.practice.active) ? '' : 'disabled'}>Back to start</button>
         <button type="button" class="action-button tonal" data-action="reset-analysis" ${hasBoard ? '' : 'disabled'}>Reset to setup</button>
         <button type="button" class="${annotateButtonClass}" data-action="toggle-annotate" aria-pressed="${state.annotations.enabled ? 'true' : 'false'}">Annotate</button>
         <button type="button" class="action-button" data-action="flip-board">Flip board</button>
@@ -3117,6 +4144,7 @@ function renderPgnPanel() {
         </div>
       </div>
     </article>
+    ${renderPracticeToolSection()}
   `;
 }
 
@@ -3456,6 +4484,9 @@ function handleDocumentClick(event) {
       toggleLessonActionsMenu();
       break;
     case 'set-tab':
+      if (state.practice.active && actionEl.dataset.tab === TAB_SETUP) {
+        stopPracticeSession();
+      }
       state.activeTab = actionEl.dataset.tab || TAB_SETUP;
       renderAll();
       schedulePersist();
@@ -3489,8 +4520,29 @@ function handleDocumentClick(event) {
       renderSetupPanel();
       schedulePersist();
       break;
+    case 'set-practice-kind':
+      state.practicePreferenceKind = normalizePracticeKind(actionEl.dataset.value);
+      renderAnalysisPanel();
+      renderPgnPanel();
+      schedulePersist();
+      break;
     case 'toggle-analysis':
       void toggleAnalysis();
+      break;
+    case 'start-practice':
+      startPracticeSession();
+      break;
+    case 'restart-practice':
+      restartPracticeSession();
+      break;
+    case 'stop-practice':
+      stopPracticeSession();
+      break;
+    case 'practice-hint':
+      requestPracticeHint();
+      break;
+    case 'practice-reveal':
+      revealPracticeMove();
       break;
     case 'toggle-annotate':
       setAnnotateMode(!state.annotations.enabled);
@@ -3506,6 +4558,13 @@ function handleDocumentClick(event) {
           document.getElementById('notationNoteInput')?.focus();
         }, 0);
       }
+      break;
+    case 'toggle-pgn-comments':
+      state.pgnCommentsVisible = !state.pgnCommentsVisible;
+      closeLessonActionsMenu({ restoreFocus: true });
+      renderNotationPanel();
+      syncLessonVisibilityMenuState();
+      schedulePersist();
       break;
     case 'toggle-tools':
       state.toolsExpanded = !state.toolsExpanded;
@@ -3552,6 +4611,17 @@ function handleDocumentClick(event) {
       closeLessonActionsMenu();
       saveLessonFile();
       break;
+    case 'import-pgn':
+      closeLessonActionsMenu();
+      if (dom.pgnFileInput) {
+        dom.pgnFileInput.value = '';
+        dom.pgnFileInput.click();
+      }
+      break;
+    case 'export-pgn':
+      closeLessonActionsMenu();
+      savePgnFile();
+      break;
     case 'copy-fen':
       void copyCurrentFenToClipboard();
       break;
@@ -3577,9 +4647,24 @@ function handleDocumentInput(event) {
     schedulePersist();
     return;
   }
+  if (event.target?.id === 'analysisTargetDepthInput') {
+    if (event.target.value !== '') {
+      state.analysisTargetDepth = normalizeAnalysisTargetDepth(event.target.value);
+      schedulePersist();
+    }
+    return;
+  }
   if (event.target?.id === 'notationNoteInput') {
     state.note.text = event.target.value;
     schedulePersist();
+    return;
+  }
+  if (event.target?.id === 'notationCommentInput') {
+    const currentNode = getCurrentAnalysisNode() || getAnalysisNode(state.analysis.rootId);
+    if (currentNode) {
+      currentNode.comment = normalizeAnalysisComment(event.target.value);
+      schedulePersist();
+    }
     return;
   }
   if (event.target.id === 'fenInput') {
@@ -3601,6 +4686,32 @@ function handleDocumentChange(event) {
         dom.lessonFileInput.value = '';
       }
     });
+    return;
+  }
+  if (event.target === dom.pgnFileInput) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    openPgnFile(file).catch((error) => {
+      console.error('Unable to import PGN file.', error);
+      syncLessonFileStatus(error?.message || 'Unable to import PGN file.');
+    }).finally(() => {
+      if (dom.pgnFileInput) {
+        dom.pgnFileInput.value = '';
+      }
+    });
+    return;
+  }
+  if (event.target?.id === 'analysisTargetDepthInput') {
+    state.analysisTargetDepth = normalizeAnalysisTargetDepth(event.target.value);
+    event.target.value = String(state.analysisTargetDepth);
+    if (!state.engine.analyzing && !state.engine.stopping && !hasAnalysisContinuationAvailable()) {
+      state.engine.summary = defaultAnalysisSummary();
+    }
+    renderAnalysisPanel();
+    renderHeaderMeta();
+    schedulePersist();
     return;
   }
 
@@ -3631,6 +4742,9 @@ function handleDocumentKeydown(event) {
     return;
   }
   if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+    return;
+  }
+  if (state.practice.active) {
     return;
   }
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
@@ -3666,6 +4780,7 @@ function initializeDefaultSetup() {
   state.setup.meta = sanitized.meta;
   state.setupFen = buildFenFromPiecesAndMeta(sanitized.pieces, sanitized.meta);
   state.setup.fenInput = state.setupFen;
+  state.practice = createEmptyPracticeState();
   assignAnalysisTree(createEmptyAnalysisTree(state.setupFen));
   syncAnalysisGameFromTree();
 }
@@ -3699,9 +4814,7 @@ function bindEvents() {
   });
   window.addEventListener('beforeunload', () => {
     persistDraft();
-    if (state.engine.worker) {
-      state.engine.worker.terminate();
-    }
+    terminateEngineWorker();
   });
   window.addEventListener('resize', renderBoard);
   window.addEventListener('blur', cancelAnnotationGesture);

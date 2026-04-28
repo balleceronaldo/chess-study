@@ -3364,5 +3364,9 @@ class Chess {
     }
 }
 
-export { BISHOP, BLACK, Chess, DEFAULT_POSITION, KING, KNIGHT, Move, PAWN, QUEEN, ROOK, SEVEN_TAG_ROSTER, SQUARES, WHITE, validateFen, xoroshiro128 };
+function parsePgn(pgn, options = {}) {
+    return peg$parse(pgn, options);
+}
+
+export { BISHOP, BLACK, Chess, DEFAULT_POSITION, KING, KNIGHT, Move, PAWN, QUEEN, ROOK, SEVEN_TAG_ROSTER, SQUARES, WHITE, parsePgn, validateFen, xoroshiro128 };
 //# sourceMappingURL=chess.js.map
