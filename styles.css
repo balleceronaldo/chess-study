@@ -1,8 +1,24 @@
+@font-face {
+  font-family: "Inter";
+  src: url("./assets/Inter/Inter-VariableFont_opsz,wght.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("./assets/Inter/Inter-Italic-VariableFont_opsz,wght.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
   --app-height: 100vh;
-  --font-body: "Aptos", "Trebuchet MS", "Segoe UI Variable Text", sans-serif;
-  --font-display: "Cambria", "Georgia", serif;
+  --font-body: "Inter", sans-serif;
+  --font-display: "Inter", sans-serif;
   --bg-top: #f6f8fb;
   --bg-mid: #eef2f7;
   --bg-bottom: #e7edf5;
