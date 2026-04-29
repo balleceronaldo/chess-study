@@ -1,5 +1,9 @@
 # Chess Lesson Study Board
 
+---
+**Local Windows deployment:** See [LOCAL_DEPLOYMENT.md](LOCAL_DEPLOYMENT.md) for running locally with Python and PowerShell.
+---
+
 Browser-based chess setup, study, and analysis app for building positions, recording lesson lines, adding annotations, and running Stockfish in the browser.
 
 ## Live App
