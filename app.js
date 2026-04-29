@@ -3836,24 +3836,21 @@ function notationSummaryText() {
 }
 
 function renderNotationNote() {
+  if (!state.note.expanded) {
+    return '';
+  }
+
   return `
     <section class="notation-note" aria-label="Lesson note">
-      <div class="notation-note-head">
-        <div>
-          <h3 class="notation-note-title">Note</h3>
-        </div>
+      <div>
+        <label class="sr-only" for="notationNoteInput">Lesson note</label>
+        <textarea
+          id="notationNoteInput"
+          class="field-textarea notation-note-input"
+          placeholder="Add a note for this lesson..."
+          spellcheck="true"
+        >${escapeHtml(state.note.text)}</textarea>
       </div>
-      ${state.note.expanded ? `
-        <div>
-          <label class="sr-only" for="notationNoteInput">Lesson note</label>
-          <textarea
-            id="notationNoteInput"
-            class="field-textarea notation-note-input"
-            placeholder="Add a note for this lesson..."
-            spellcheck="true"
-          >${escapeHtml(state.note.text)}</textarea>
-        </div>
-      ` : ''}
     </section>
   `;
 }
