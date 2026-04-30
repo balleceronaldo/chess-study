@@ -12,6 +12,12 @@ const ANNOTATION_ARROW_HEAD_LENGTH = 30;
 const ANNOTATION_ARROW_HEAD_WIDTH = 40;
 const ENGINE_MULTI_PV_COUNT = 3;
 const ENGINE_READY_TIMEOUT_MS = 15000;
+const TABLEBASE_ENDPOINT = 'https://tablebase.lichess.org/standard';
+const TABLEBASE_FETCH_TIMEOUT_MS = 30000;
+const TABLEBASE_MAX_TOTAL_PIECES = 6;
+const TABLEBASE_MAX_PIECES_PER_SIDE = 3;
+const TABLEBASE_LINE_MAX_PLIES = 80;
+const TABLEBASE_LINE_MAX_REQUESTS = 80;
 const DEFAULT_ANALYSIS_TARGET_DEPTH = 30;
 const ANALYSIS_TARGET_DEPTH_MIN = 1;
 const ANALYSIS_TARGET_DEPTH_MAX = 99;
@@ -214,7 +220,17 @@ const state = {
     searchMode: '',
     pendingSearchMode: '',
     searchTargetDepth: null,
+    summaryPrefix: '',
     evalRailVisible: true,
+  },
+  tablebase: {
+    probing: false,
+    requestId: 0,
+    fen: '',
+    result: null,
+    error: '',
+    abortController: null,
+    cache: new Map(),
   },
   annotations: {
     enabled: false,
@@ -275,6 +291,7 @@ function createEmptyEnginePvLine(index) {
   return {
     index,
     line: '',
+    uciMoves: [],
     depth: null,
     scoreType: '',
     scoreValue: null,
@@ -317,6 +334,558 @@ function currentAnalysisTargetDepth() {
   return normalizeAnalysisTargetDepth(state.analysisTargetDepth);
 }
 
+function normalizeFenForTablebase(fen) {
+  const normalized = String(fen ?? '').trim().replace(/\s+/g, ' ');
+  if (!normalized) {
+    return '';
+  }
+  try {
+    return new Chess(normalized).fen();
+  } catch {
+    return normalized;
+  }
+}
+
+function tablebaseEligibilityForFen(fen) {
+  const normalizedFen = normalizeFenForTablebase(fen);
+  if (!validateFen(normalizedFen).ok) {
+    return { eligible: false, reason: 'invalid-fen', fen: normalizedFen };
+  }
+  const parsed = parseFenLike(normalizedFen);
+  if (!parsed.ok) {
+    return { eligible: false, reason: 'invalid-fen', fen: normalizedFen };
+  }
+  if (parsed.meta.castling !== '-') {
+    return { eligible: false, reason: 'castling-rights', fen: normalizedFen };
+  }
+
+  let whitePieces = 0;
+  let blackPieces = 0;
+  let whiteKings = 0;
+  let blackKings = 0;
+  Object.values(parsed.pieces).forEach((piece) => {
+    if (piece === piece.toUpperCase()) {
+      whitePieces += 1;
+    } else {
+      blackPieces += 1;
+    }
+    if (piece === 'K') {
+      whiteKings += 1;
+    } else if (piece === 'k') {
+      blackKings += 1;
+    }
+  });
+
+  const totalPieces = whitePieces + blackPieces;
+  if (whiteKings !== 1 || blackKings !== 1) {
+    return { eligible: false, reason: 'king-count', fen: normalizedFen };
+  }
+  if (
+    totalPieces > TABLEBASE_MAX_TOTAL_PIECES
+    || whitePieces > TABLEBASE_MAX_PIECES_PER_SIDE
+    || blackPieces > TABLEBASE_MAX_PIECES_PER_SIDE
+  ) {
+    return { eligible: false, reason: 'piece-count', fen: normalizedFen };
+  }
+
+  return {
+    eligible: true,
+    fen: normalizedFen,
+    whitePieces,
+    blackPieces,
+    totalPieces,
+  };
+}
+
+function isTablebaseEligibleFen(fen) {
+  return tablebaseEligibilityForFen(fen).eligible;
+}
+
+function tablebaseResultActive() {
+  return Boolean(
+    currentTablebaseResultForDisplay()
+    && !state.tablebase.probing,
+  );
+}
+
+function currentTablebaseResultForDisplay() {
+  return (
+    state.tablebase.result
+    && state.tablebase.result.fen
+    && state.tablebase.result.fen === state.analysis.currentFen
+  ) ? state.tablebase.result : null;
+}
+
+function tablebaseDisplayActive() {
+  return Boolean(currentTablebaseResultForDisplay() || (state.tablebase.probing && !hasVisibleEnginePvLines()));
+}
+
+function abortTablebaseProbe() {
+  if (state.tablebase.abortController) {
+    state.tablebase.abortController.abort();
+    state.tablebase.abortController = null;
+  }
+}
+
+function clearTablebaseDisplay(options = {}) {
+  const { cancelProbe = true } = options;
+  if (cancelProbe) {
+    state.tablebase.requestId += 1;
+    abortTablebaseProbe();
+  }
+  state.tablebase.probing = false;
+  state.tablebase.fen = '';
+  state.tablebase.result = null;
+  state.tablebase.error = '';
+}
+
+function tablebaseQueryUrl(fen) {
+  const queryFen = normalizeFenForTablebase(fen).replace(/\s+/g, '_');
+  return `${TABLEBASE_ENDPOINT}?fen=${encodeURIComponent(queryFen)}`;
+}
+
+function isTablebaseWinCategory(category) {
+  return category === 'win'
+    || category === 'syzygy-win'
+    || category === 'maybe-win'
+    || category === 'cursed-win';
+}
+
+function isTablebaseLossCategory(category) {
+  return category === 'loss'
+    || category === 'syzygy-loss'
+    || category === 'maybe-loss'
+    || category === 'blessed-loss';
+}
+
+function tablebaseWhiteOutcomeForCategory(category, sideToMove) {
+  const normalized = String(category || '').trim().toLowerCase();
+  if (isTablebaseWinCategory(normalized)) {
+    return sideToMove === 'b' ? 'black' : 'white';
+  }
+  if (isTablebaseLossCategory(normalized)) {
+    return sideToMove === 'b' ? 'white' : 'black';
+  }
+  if (normalized === 'draw') {
+    return 'draw';
+  }
+  return 'unknown';
+}
+
+function tablebaseEvalLabelForOutcome(outcome) {
+  if (outcome === 'white') {
+    return 'TB +';
+  }
+  if (outcome === 'black') {
+    return 'TB -';
+  }
+  if (outcome === 'draw') {
+    return 'TB =';
+  }
+  return 'TB ?';
+}
+
+function tablebaseResultLabelForOutcome(outcome) {
+  if (outcome === 'white') {
+    return 'White win';
+  }
+  if (outcome === 'black') {
+    return 'Black win';
+  }
+  if (outcome === 'draw') {
+    return 'Draw';
+  }
+  return 'Unknown';
+}
+
+function tablebaseWhiteFractionForOutcome(outcome) {
+  if (outcome === 'white') {
+    return 0.98;
+  }
+  if (outcome === 'black') {
+    return 0.02;
+  }
+  return 0.5;
+}
+
+function formatTablebaseCategory(category) {
+  const normalized = String(category || '').trim().toLowerCase();
+  if (!normalized) {
+    return 'Unknown';
+  }
+  return normalized
+    .split('-')
+    .map((part) => part ? `${part[0].toUpperCase()}${part.slice(1)}` : '')
+    .join(' ');
+}
+
+function normalizeTablebaseMetric(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.trunc(numeric) : null;
+}
+
+function formatTablebaseMetric(value) {
+  const normalized = normalizeTablebaseMetric(value);
+  return Number.isFinite(normalized) ? String(normalized) : '—';
+}
+
+function normalizeUciMove(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(normalized) ? normalized : '';
+}
+
+function moveToUci(move) {
+  if (!move?.from || !move?.to) {
+    return '';
+  }
+  const promotion = normalizePromotionValue(move.promotion);
+  return normalizeUciMove(`${move.from}${move.to}${promotion || ''}`);
+}
+
+function moveMatchesUci(move, uci) {
+  return Boolean(moveToUci(move) && moveToUci(move) === normalizeUciMove(uci));
+}
+
+function formatUciMoveLine(fen, uciMoves) {
+  const normalizedMoves = Array.isArray(uciMoves)
+    ? uciMoves.map(normalizeUciMove).filter(Boolean)
+    : [];
+  if (!normalizedMoves.length) {
+    return '';
+  }
+  return formatTablebaseSanLine(fen, uciMovesToSan(fen, normalizedMoves));
+}
+
+function tablebaseUciMoveObject(uci) {
+  const normalized = normalizeUciMove(uci);
+  if (!normalized) {
+    return null;
+  }
+  return {
+    from: normalized.slice(0, 2),
+    to: normalized.slice(2, 4),
+    promotion: normalized[4] || undefined,
+  };
+}
+
+function formatTablebaseSanLine(fen, sanMoves) {
+  const parsed = parseFenLike(fen);
+  if (!parsed.ok || !Array.isArray(sanMoves) || !sanMoves.length) {
+    return '';
+  }
+
+  let sideToMove = parsed.meta.activeColor;
+  let moveNumber = parsed.meta.fullmove;
+  const tokens = [];
+  sanMoves.forEach((san, index) => {
+    if (sideToMove === 'w') {
+      tokens.push(`${moveNumber}. ${san}`);
+      sideToMove = 'b';
+      return;
+    }
+    tokens.push(index === 0 ? `${moveNumber}... ${san}` : san);
+    sideToMove = 'w';
+    moveNumber += 1;
+  });
+  return tokens.join(' ');
+}
+
+function nextTablebaseLineMove(payload) {
+  if (!payload || !Array.isArray(payload.moves)) {
+    return null;
+  }
+  return payload.moves.find((move) => tablebaseUciMoveObject(move?.uci)) || null;
+}
+
+function tablebaseLineTargetPlies(move, rootResult) {
+  const candidate = Math.abs(normalizeTablebaseMetric(move?.dtm) ?? normalizeTablebaseMetric(rootResult?.dtm) ?? 0) + 1;
+  if (!Number.isFinite(candidate) || candidate <= 1) {
+    return 1;
+  }
+  return clamp(candidate, 1, TABLEBASE_LINE_MAX_PLIES);
+}
+
+async function fetchTablebasePayloadWithBudget(fen, signal, budget) {
+  const normalizedFen = normalizeFenForTablebase(fen);
+  if (!state.tablebase.cache.has(normalizedFen)) {
+    if (budget.remaining <= 0) {
+      throw new Error('Tablebase line request budget exhausted.');
+    }
+    budget.remaining -= 1;
+  }
+  return fetchTablebasePayload(normalizedFen, signal);
+}
+
+async function buildTablebaseMoveLine(rootFen, rootResult, move, signal, budget) {
+  const firstMove = tablebaseUciMoveObject(move.uci);
+  if (!firstMove) {
+    return { line: '', uciMoves: [] };
+  }
+
+  const game = new Chess(rootFen);
+  const sanMoves = [];
+  const uciMoves = [];
+  let truncated = false;
+  try {
+    const applied = game.move(firstMove);
+    sanMoves.push(applied.san);
+    uciMoves.push(normalizeUciMove(move.uci));
+    if (game.isGameOver() || move.outcome === 'draw') {
+      return {
+        line: formatTablebaseSanLine(rootFen, sanMoves),
+        uciMoves,
+      };
+    }
+
+    const targetPlies = tablebaseLineTargetPlies(move, rootResult);
+    while (sanMoves.length < targetPlies && !game.isGameOver()) {
+      const currentFen = game.fen();
+      if (!isTablebaseEligibleFen(currentFen)) {
+        break;
+      }
+      let payload = null;
+      try {
+        payload = await fetchTablebasePayloadWithBudget(currentFen, signal, budget);
+      } catch {
+        truncated = true;
+        break;
+      }
+      const reply = nextTablebaseLineMove(payload);
+      const replyMove = tablebaseUciMoveObject(reply?.uci);
+      if (!replyMove) {
+        break;
+      }
+      const replyApplied = game.move(replyMove);
+      sanMoves.push(replyApplied.san);
+      uciMoves.push(normalizeUciMove(reply.uci));
+    }
+  } catch {
+    const fallbackUci = normalizeUciMove(move.uci);
+    return {
+      line: move.san || fallbackUci,
+      uciMoves: fallbackUci ? [fallbackUci] : [],
+    };
+  }
+
+  const line = formatTablebaseSanLine(rootFen, sanMoves);
+  return {
+    line: truncated && line ? `${line} ...` : line,
+    uciMoves,
+  };
+}
+
+async function hydrateTablebaseMoveLines(rootFen, result, signal) {
+  const budget = { remaining: TABLEBASE_LINE_MAX_REQUESTS };
+  for (const move of result.moves) {
+    const lineResult = await buildTablebaseMoveLine(rootFen, result, move, signal, budget);
+    move.line = lineResult.line;
+    move.uciMoves = lineResult.uciMoves;
+  }
+}
+
+function normalizeTablebaseMove(move, index, fen, nextSideToMove) {
+  const category = String(move?.category || '').trim().toLowerCase();
+  const outcome = tablebaseWhiteOutcomeForCategory(category, nextSideToMove);
+  const uci = String(move?.uci || '').trim();
+  const san = String(move?.san || '').trim() || (uci ? (uciMovesToSan(fen, [uci])[0] || uci) : '');
+  return {
+    index: index + 1,
+    uci,
+    san,
+    category,
+    categoryLabel: formatTablebaseCategory(category),
+    outcome,
+    resultLabel: tablebaseResultLabelForOutcome(outcome),
+    evalLabel: tablebaseEvalLabelForOutcome(outcome),
+    dtm: normalizeTablebaseMetric(move?.dtm),
+    dtz: normalizeTablebaseMetric(move?.precise_dtz ?? move?.dtz),
+    line: san,
+    uciMoves: uci ? [normalizeUciMove(uci)].filter(Boolean) : [],
+  };
+}
+
+function normalizeTablebasePayload(fen, payload) {
+  const parsed = parseFenLike(fen);
+  if (!parsed.ok || !payload || typeof payload !== 'object' || !Array.isArray(payload.moves)) {
+    throw new Error('Tablebase returned an unexpected response.');
+  }
+
+  const category = String(payload.category || '').trim().toLowerCase();
+  if (!category || category === 'unknown') {
+    throw new Error('Tablebase did not solve this position.');
+  }
+
+  const outcome = tablebaseWhiteOutcomeForCategory(category, parsed.meta.activeColor);
+  const nextSideToMove = parsed.meta.activeColor === 'b' ? 'w' : 'b';
+  const result = {
+    fen,
+    category,
+    categoryLabel: formatTablebaseCategory(category),
+    outcome,
+    resultLabel: tablebaseResultLabelForOutcome(outcome),
+    evalLabel: tablebaseEvalLabelForOutcome(outcome),
+    whiteFraction: tablebaseWhiteFractionForOutcome(outcome),
+    dtm: normalizeTablebaseMetric(payload.dtm),
+    dtz: normalizeTablebaseMetric(payload.precise_dtz ?? payload.dtz),
+    moves: payload.moves
+      .slice(0, ENGINE_MULTI_PV_COUNT)
+      .map((move, index) => normalizeTablebaseMove(move, index, fen, nextSideToMove)),
+  };
+  result.summary = `Tablebase solved: ${result.resultLabel} (${result.categoryLabel}). DTM ${formatTablebaseMetric(result.dtm)}, DTZ ${formatTablebaseMetric(result.dtz)}.`;
+  return result;
+}
+
+function currentEvalDisplay() {
+  const tablebaseResult = currentTablebaseResultForDisplay();
+  if (tablebaseResult) {
+    return {
+      label: tablebaseResult.evalLabel,
+      whiteFraction: tablebaseResult.whiteFraction,
+    };
+  }
+  return {
+    label: state.engine.evalLabel || '0.00',
+    whiteFraction: Number.isFinite(state.engine.scoreValue)
+      ? scoreToWhiteFraction(state.engine.scoreType, state.engine.scoreValue)
+      : 0.5,
+  };
+}
+
+async function fetchTablebasePayload(fen, signal) {
+  const normalizedFen = normalizeFenForTablebase(fen);
+  if (state.tablebase.cache.has(normalizedFen)) {
+    return state.tablebase.cache.get(normalizedFen);
+  }
+  const response = await window.fetch(tablebaseQueryUrl(normalizedFen), {
+    method: 'GET',
+    cache: 'no-store',
+    signal,
+  });
+  if (response.status === 429) {
+    throw new Error('Lichess tablebase rate limit reached.');
+  }
+  if (!response.ok) {
+    throw new Error(`Tablebase lookup failed (${response.status}).`);
+  }
+  const payload = await response.json();
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.moves)) {
+    throw new Error('Tablebase returned an unexpected response.');
+  }
+  state.tablebase.cache.set(normalizedFen, payload);
+  return payload;
+}
+
+function paddedEnginePvLines(lines) {
+  const normalized = lines.slice(0, ENGINE_MULTI_PV_COUNT).map((line, index) => ({
+    ...line,
+    index: index + 1,
+  }));
+  while (normalized.length < ENGINE_MULTI_PV_COUNT) {
+    normalized.push(createEmptyEnginePvLine(normalized.length + 1));
+  }
+  return normalized;
+}
+
+function createFollowedEnginePvLines(move, nextFen) {
+  const followedLines = state.engine.pvLines
+    .filter((entry) => entry?.uciMoves?.length && moveMatchesUci(move, entry.uciMoves[0]))
+    .map((entry) => {
+      const remainingUciMoves = entry.uciMoves.slice(1).map(normalizeUciMove).filter(Boolean);
+      const line = formatUciMoveLine(nextFen, remainingUciMoves);
+      return {
+        ...entry,
+        line,
+        uciMoves: remainingUciMoves,
+      };
+    })
+    .filter((entry) => entry.line || entry.uciMoves.length);
+  return followedLines.length ? paddedEnginePvLines(followedLines) : null;
+}
+
+function createFollowedTablebaseResult(move, nextFen) {
+  const currentResult = currentTablebaseResultForDisplay();
+  if (!currentResult?.moves?.length) {
+    return null;
+  }
+  const matchingMoves = currentResult.moves.filter((entry) => moveMatchesUci(move, entry.uci));
+  if (!matchingMoves.length) {
+    return null;
+  }
+
+  const normalizedNextFen = normalizeFenForTablebase(nextFen);
+  const moves = matchingMoves.map((entry, index) => {
+    const remainingUciMoves = Array.isArray(entry.uciMoves)
+      ? entry.uciMoves.slice(1).map(normalizeUciMove).filter(Boolean)
+      : [];
+    return {
+      ...entry,
+      index: index + 1,
+      uci: remainingUciMoves[0] || '',
+      san: remainingUciMoves[0] ? (uciMovesToSan(normalizedNextFen, [remainingUciMoves[0]])[0] || remainingUciMoves[0]) : '',
+      line: formatUciMoveLine(normalizedNextFen, remainingUciMoves) || 'Line reached.',
+      uciMoves: remainingUciMoves,
+    };
+  });
+
+  const followedResult = {
+    ...currentResult,
+    fen: normalizedNextFen,
+    dtm: normalizeTablebaseMetric(matchingMoves[0]?.dtm),
+    dtz: normalizeTablebaseMetric(matchingMoves[0]?.dtz),
+    moves,
+  };
+  followedResult.summary = `Following tablebase line: ${followedResult.resultLabel}. Analyze to refresh exact DTM and DTZ.`;
+  return followedResult;
+}
+
+function createFollowedAnalysisDisplay(move, nextFen) {
+  const tablebaseResult = createFollowedTablebaseResult(move, nextFen);
+  if (tablebaseResult) {
+    return {
+      source: 'tablebase',
+      result: tablebaseResult,
+    };
+  }
+
+  const enginePvLines = createFollowedEnginePvLines(move, nextFen);
+  if (enginePvLines) {
+    return {
+      source: 'engine',
+      pvLines: enginePvLines,
+    };
+  }
+
+  return null;
+}
+
+function applyFollowedAnalysisDisplay(followedDisplay) {
+  if (!followedDisplay) {
+    return;
+  }
+  if (followedDisplay.source === 'tablebase') {
+    clearEngineContinuationState();
+    state.tablebase.probing = false;
+    state.tablebase.abortController = null;
+    state.tablebase.fen = followedDisplay.result.fen;
+    state.tablebase.result = followedDisplay.result;
+    state.tablebase.error = '';
+    clearEngineSearchData();
+    state.engine.summary = followedDisplay.result.summary;
+    return;
+  }
+  if (followedDisplay.source === 'engine') {
+    clearTablebaseDisplay();
+    clearEngineContinuationState();
+    state.engine.pvLines = followedDisplay.pvLines;
+    state.engine.summary = state.engine.analyzing
+      ? 'Following displayed PV while Stockfish searches the new position...'
+      : 'Following displayed PV. Analyze to refresh this position.';
+  }
+}
+
 function clearEngineContinuationState() {
   state.engine.resumeFen = '';
   state.engine.resumeEligible = false;
@@ -346,6 +915,10 @@ function clearEngineSearchData(options = {}) {
   state.engine.bestMove = '';
 }
 
+function withEngineSummaryPrefix(summary) {
+  return state.engine.summaryPrefix ? `${state.engine.summaryPrefix} ${summary}` : summary;
+}
+
 function postEngineSearchCommands(worker, fen, options = {}) {
   const {
     freshGame = true,
@@ -369,9 +942,11 @@ function startEngineSearch(worker, fen, options = {}) {
     preserveDisplay = false,
     freshGame = true,
     summary = 'Analyzing current board position...',
+    summaryPrefix = '',
     searchMode = ENGINE_SEARCH_MODE_CHECKPOINT,
     targetDepth = null,
   } = options;
+  clearTablebaseDisplay();
   if (!preserveDisplay) {
     clearEngineSearchData();
   }
@@ -385,6 +960,7 @@ function startEngineSearch(worker, fen, options = {}) {
   state.engine.searchTargetDepth = searchMode === ENGINE_SEARCH_MODE_CHECKPOINT
     ? normalizeAnalysisTargetDepth(targetDepth)
     : (Number.isFinite(targetDepth) ? Math.trunc(targetDepth) : null);
+  state.engine.summaryPrefix = summaryPrefix;
   state.engine.summary = summary;
   renderNotationPanel();
   renderAnalysisPanel();
@@ -397,15 +973,19 @@ function startEngineSearch(worker, fen, options = {}) {
   });
 }
 
-function queueEngineSearchForFen(fen) {
+function queueEngineSearchForFen(fen, options = {}) {
+  const { preserveDisplay = false } = options;
   if (!fen || !state.engine.worker || !state.engine.ready || !state.engine.analyzing || state.engine.stopping) {
     return;
   }
+  clearTablebaseDisplay();
   state.engine.pendingFen = fen;
   state.engine.pendingSearchMode = state.engine.searchMode || ENGINE_SEARCH_MODE_CHECKPOINT;
   state.engine.searchFen = '';
   clearEngineContinuationState();
-  clearEngineSearchData({ preserveEval: true });
+  if (!preserveDisplay) {
+    clearEngineSearchData({ preserveEval: true });
+  }
   state.engine.summary = state.engine.pendingSearchMode === ENGINE_SEARCH_MODE_CONTINUE
     ? 'Continuing analysis from the current board position...'
     : `Analyzing current board position toward depth ${currentAnalysisTargetDepth()}...`;
@@ -1491,6 +2071,9 @@ function defaultAnalysisSummary() {
   if (!state.analysis.game) {
     return 'Fix the setup in the Setup tab to enable legal-move analysis.';
   }
+  if (isTablebaseEligibleFen(state.analysis.currentFen)) {
+    return 'Select Analyze to probe the Lichess tablebase for this up-to-3x3 endgame. Stockfish is used if the lookup is unavailable.';
+  }
   const targetDepth = currentAnalysisTargetDepth();
   if (state.engine.ready) {
     return state.engine.bundleLabel
@@ -2110,6 +2693,7 @@ function resetAnalysisOutput(options = {}) {
   if (state.engine.worker && state.engine.analyzing) {
     state.engine.worker.postMessage('stop');
   }
+  clearTablebaseDisplay();
   state.engine.loading = false;
   state.engine.analyzing = false;
   state.engine.stopping = false;
@@ -2117,6 +2701,7 @@ function resetAnalysisOutput(options = {}) {
   state.engine.pendingFen = '';
   state.engine.searchMode = '';
   state.engine.pendingSearchMode = '';
+  state.engine.summaryPrefix = '';
   clearEngineContinuationState();
   state.engine.summary = summary;
   state.engine.evalRailVisible = true;
@@ -2524,6 +3109,9 @@ function formatNodeCount(value) {
 }
 
 function currentAnalyzeButtonLabel() {
+  if (state.tablebase.probing) {
+    return 'Probing...';
+  }
   if (state.engine.loading) {
     return 'Loading...';
   }
@@ -2533,10 +3121,19 @@ function currentAnalyzeButtonLabel() {
   if (state.engine.analyzing) {
     return 'Stop';
   }
+  if (tablebaseResultActive()) {
+    return 'Analyze';
+  }
   return hasAnalysisContinuationAvailable() ? 'Continue' : 'Analyze';
 }
 
 function currentPvPlaceholderText() {
+  if (state.tablebase.probing) {
+    return 'Probing tablebase moves...';
+  }
+  if (tablebaseResultActive()) {
+    return 'No tablebase move is available.';
+  }
   if (state.engine.loading) {
     return 'Loading engine line...';
   }
@@ -2564,7 +3161,58 @@ function hasVisibleEnginePvLines() {
   return state.engine.pvLines.some((entry) => entry.line);
 }
 
+function hasVisibleAnalysisLines() {
+  if (state.tablebase.probing) {
+    return true;
+  }
+  const tablebaseResult = currentTablebaseResultForDisplay();
+  if (tablebaseResult) {
+    return tablebaseResult.moves.length > 0;
+  }
+  return hasVisibleEnginePvLines();
+}
+
+function renderTablebaseLineListMarkup() {
+  const tablebaseResult = currentTablebaseResultForDisplay();
+  const moves = tablebaseResult ? tablebaseResult.moves : [];
+  const entries = moves.length
+    ? moves
+    : Array.from({ length: ENGINE_MULTI_PV_COUNT }, (_, index) => ({
+        index: index + 1,
+        san: '',
+        resultLabel: 'Pending',
+        evalLabel: '',
+        dtm: null,
+        dtz: null,
+        categoryLabel: 'Pending',
+        line: '',
+      }));
+  const emptyText = currentPvPlaceholderText();
+  return `
+    <div class="pv-line-list">
+      ${entries.map((entry) => {
+        const moveText = (entry.line || entry.san)
+          ? (entry.line || entry.san)
+          : emptyText;
+        return `
+          <div class="pv-line ${entry.san ? '' : 'is-empty'}">
+            <div class="pv-line-head">
+              <span class="pv-line-index">TB ${entry.index}</span>
+              <span class="pv-line-depth">Line</span>
+              <span class="pv-line-score">${escapeHtml(entry.evalLabel || entry.resultLabel || 'Pending')}</span>
+            </div>
+            <div class="pv-line-text">${escapeHtml(moveText)}</div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
 function renderPvLineListMarkup() {
+  if (tablebaseDisplayActive()) {
+    return renderTablebaseLineListMarkup();
+  }
   const emptyText = currentPvPlaceholderText();
   return `
     <div class="pv-line-list">
@@ -2703,12 +3351,14 @@ function terminateEngineWorker() {
   state.engine.worker = null;
 }
 
-async function createStockfishWorker() {
+async function createStockfishWorker(options = {}) {
+  const { summaryPrefix = '' } = options;
   const candidate = await resolveStockfishBundleCandidate();
   state.engine.bundleId = candidate.id;
   state.engine.bundleLabel = candidate.label;
   state.engine.bundlePath = candidate.workerPath;
-  state.engine.summary = `Loading Stockfish (${candidate.label})...`;
+  const loadingSummary = `Loading Stockfish (${candidate.label})...`;
+  state.engine.summary = summaryPrefix ? `${summaryPrefix} ${loadingSummary}` : loadingSummary;
   renderAnalysisPanel();
   renderHeaderMeta();
   const worker = new Worker(new URL(candidate.workerPath, import.meta.url));
@@ -2773,13 +3423,15 @@ function handleWorkerMessage(event) {
     state.engine.nodes = Number.isFinite(info.nodes) ? info.nodes : state.engine.nodes;
     const pvIndex = info.multipv - 1;
     const existingLine = state.engine.pvLines[pvIndex] || createEmptyEnginePvLine(info.multipv);
-    const sanLine = uciMovesToSan(state.engine.searchFen, info.pv);
+    const uciLine = Array.isArray(info.pv) ? info.pv.map(normalizeUciMove).filter(Boolean) : [];
+    const sanLine = uciMovesToSan(state.engine.searchFen, uciLine);
     const nextEvalLabel = info.scoreType
       ? formatScoreLabel(normalizedScore.scoreType, normalizedScore.scoreValue)
       : existingLine.evalLabel;
     state.engine.pvLines[pvIndex] = {
       index: info.multipv,
       line: sanLine.length ? sanLine.join(' ') : '',
+      uciMoves: uciLine.slice(0, sanLine.length || uciLine.length),
       depth: Number.isFinite(info.depth) ? info.depth : existingLine.depth,
       scoreType: normalizedScore.scoreType || existingLine.scoreType,
       scoreValue: Number.isFinite(normalizedScore.scoreValue) ? normalizedScore.scoreValue : existingLine.scoreValue,
@@ -2804,7 +3456,7 @@ function handleWorkerMessage(event) {
     if (state.engine.nps) {
       summaryBits.push(`${formatNodeCount(state.engine.nps)} nps`);
     }
-    state.engine.summary = summaryBits.join(' | ');
+    state.engine.summary = withEngineSummaryPrefix(summaryBits.join(' | '));
     renderNotationPanel();
     renderAnalysisPanel();
     renderBoard();
@@ -2871,6 +3523,8 @@ function handleWorkerMessage(event) {
         : 'Search finished. No legal moves are available in this position.';
       clearEngineContinuationState();
     }
+    state.engine.summary = withEngineSummaryPrefix(state.engine.summary);
+    state.engine.summaryPrefix = '';
     state.engine.searchFen = '';
     state.engine.searchMode = '';
     state.engine.searchTargetDepth = null;
@@ -2881,7 +3535,8 @@ function handleWorkerMessage(event) {
   }
 }
 
-async function ensureStockfishReady() {
+async function ensureStockfishReady(options = {}) {
+  const { summary = 'Loading Stockfish engine...', summaryPrefix = '' } = options;
   if (state.engine.ready && state.engine.worker) {
     return state.engine.worker;
   }
@@ -2889,7 +3544,7 @@ async function ensureStockfishReady() {
     return state.engine.loadingPromise;
   }
   state.engine.loading = true;
-  state.engine.summary = 'Loading Stockfish engine...';
+  state.engine.summary = summary;
   renderNotationPanel();
   renderAnalysisPanel();
   renderHeaderMeta();
@@ -2906,7 +3561,7 @@ async function ensureStockfishReady() {
     void (async () => {
       try {
         if (!state.engine.worker) {
-          state.engine.worker = await createStockfishWorker();
+          state.engine.worker = await createStockfishWorker({ summaryPrefix });
         }
         state.engine.worker.postMessage('uci');
         state.engine.worker.postMessage('isready');
@@ -2933,12 +3588,185 @@ function stopAnalysisSearch({ clearSummary = false, hideEvalRail = clearSummary 
   state.engine.pendingFen = '';
   state.engine.searchMode = '';
   state.engine.pendingSearchMode = '';
+  state.engine.summaryPrefix = '';
   clearEngineContinuationState();
   if (clearSummary) {
+    clearTablebaseDisplay();
     state.engine.summary = defaultAnalysisSummary();
     clearEngineSearchData();
   }
   state.engine.evalRailVisible = !hideEvalRail;
+}
+
+function renderAnalysisOutputPanels() {
+  renderNotationPanel();
+  renderAnalysisPanel();
+  renderBoard();
+  renderHeaderMeta();
+}
+
+async function startStockfishAnalysisForCurrentPosition(options = {}) {
+  const { prelude = '' } = options;
+  try {
+    state.engine.evalRailVisible = true;
+    const currentFen = state.analysis.currentFen;
+    const continuationRequested = !prelude && hasAnalysisContinuationAvailable();
+    const continuationDepth = Number.isFinite(state.engine.resumeDepth) ? state.engine.resumeDepth : null;
+    const requestedWarmRestart = Boolean(
+      continuationRequested
+      && state.engine.worker
+      && state.engine.ready
+    );
+    if (continuationRequested) {
+      state.engine.summary = state.engine.ready
+        ? (Number.isFinite(continuationDepth)
+            ? `Continuing analysis past depth ${continuationDepth}...`
+            : 'Continuing analysis from the current board position...')
+        : 'Loading Stockfish engine...';
+    } else {
+      clearEngineSearchData();
+      const stockfishSummary = state.engine.ready
+        ? `Analyzing current board position toward depth ${currentAnalysisTargetDepth()}...`
+        : 'Loading Stockfish engine...';
+      state.engine.summary = prelude ? `${prelude} ${stockfishSummary}` : stockfishSummary;
+    }
+    renderNotationPanel();
+    renderBoard();
+    renderAnalysisPanel();
+    const worker = await ensureStockfishReady({
+      summary: prelude ? `${prelude} Loading Stockfish engine...` : 'Loading Stockfish engine...',
+      summaryPrefix: prelude,
+    });
+    if (!state.analysis.game || state.analysis.currentFen !== currentFen) {
+      state.engine.summary = defaultAnalysisSummary();
+      renderAnalysisOutputPanels();
+      return;
+    }
+    const canWarmRestart = Boolean(requestedWarmRestart && worker === state.engine.worker);
+    const stockfishSearchSummary = continuationRequested
+      ? (Number.isFinite(continuationDepth)
+          ? `Continuing analysis past depth ${continuationDepth}...`
+          : 'Continuing analysis from the current board position...')
+      : `Analyzing current board position toward depth ${currentAnalysisTargetDepth()}...`;
+    startEngineSearch(worker, currentFen, {
+      preserveDisplay: continuationRequested,
+      freshGame: !canWarmRestart,
+      searchMode: continuationRequested ? ENGINE_SEARCH_MODE_CONTINUE : ENGINE_SEARCH_MODE_CHECKPOINT,
+      targetDepth: continuationRequested ? continuationDepth : currentAnalysisTargetDepth(),
+      summaryPrefix: prelude,
+      summary: prelude ? `${prelude} ${stockfishSearchSummary}` : stockfishSearchSummary,
+    });
+  } catch (error) {
+    state.engine.ready = false;
+    state.engine.analyzing = false;
+    state.engine.stopping = false;
+    state.engine.searchFen = '';
+    state.engine.pendingFen = '';
+    state.engine.searchMode = '';
+    state.engine.pendingSearchMode = '';
+    clearEngineContinuationState();
+    state.engine.evalRailVisible = true;
+    clearEngineSearchData();
+    state.engine.summary = error?.message || 'Failed to start Stockfish.';
+    renderAnalysisOutputPanels();
+  }
+}
+
+function tablebaseFallbackPrelude(error) {
+  const message = String(error?.message || '').trim();
+  if (message.includes('rate limit')) {
+    return 'Tablebase rate limited; using Stockfish.';
+  }
+  if (error?.name === 'AbortError') {
+    return 'Tablebase lookup timed out; using Stockfish.';
+  }
+  return 'Tablebase unavailable; using Stockfish.';
+}
+
+async function startTablebaseAnalysisForFen(fen, options = {}) {
+  const { fallbackToEngine = true, preserveDisplay = false } = options;
+  const eligibility = tablebaseEligibilityForFen(fen);
+  if (!eligibility.eligible) {
+    return false;
+  }
+
+  if (state.engine.worker && state.engine.searchFen) {
+    state.engine.worker.postMessage('stop');
+  }
+  state.engine.loading = false;
+  state.engine.analyzing = false;
+  state.engine.stopping = false;
+  state.engine.searchFen = '';
+  state.engine.pendingFen = '';
+  state.engine.searchMode = '';
+  state.engine.pendingSearchMode = '';
+  state.engine.summaryPrefix = '';
+  clearEngineContinuationState();
+  if (!preserveDisplay) {
+    clearEngineSearchData();
+  }
+
+  abortTablebaseProbe();
+  const requestId = state.tablebase.requestId + 1;
+  const controller = new AbortController();
+  state.tablebase.requestId = requestId;
+  state.tablebase.abortController = controller;
+  state.tablebase.probing = true;
+  state.tablebase.fen = eligibility.fen;
+  if (!preserveDisplay || state.tablebase.result?.fen !== eligibility.fen) {
+    state.tablebase.result = null;
+  }
+  state.tablebase.error = '';
+  state.engine.evalRailVisible = true;
+  state.engine.summary = 'Probing Lichess tablebase for this up-to-3x3 endgame...';
+  renderAnalysisOutputPanels();
+
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, TABLEBASE_FETCH_TIMEOUT_MS);
+
+  try {
+    const payload = await fetchTablebasePayload(eligibility.fen, controller.signal);
+    if (state.tablebase.requestId !== requestId || state.analysis.currentFen !== eligibility.fen) {
+      window.clearTimeout(timeoutId);
+      return false;
+    }
+    const result = normalizeTablebasePayload(eligibility.fen, payload);
+    await hydrateTablebaseMoveLines(eligibility.fen, result, controller.signal);
+    window.clearTimeout(timeoutId);
+    if (state.tablebase.requestId !== requestId || state.analysis.currentFen !== eligibility.fen) {
+      return false;
+    }
+    state.tablebase.probing = false;
+    state.tablebase.abortController = null;
+    state.tablebase.fen = eligibility.fen;
+    state.tablebase.result = result;
+    state.tablebase.error = '';
+    clearEngineContinuationState();
+    clearEngineSearchData();
+    state.engine.summary = result.summary;
+    renderAnalysisOutputPanels();
+    return true;
+  } catch (error) {
+    window.clearTimeout(timeoutId);
+    if (state.tablebase.requestId !== requestId || state.analysis.currentFen !== eligibility.fen) {
+      return false;
+    }
+    const fallbackPrelude = tablebaseFallbackPrelude(error);
+    state.tablebase.probing = false;
+    state.tablebase.abortController = null;
+    state.tablebase.fen = preserveDisplay && state.tablebase.result?.fen === eligibility.fen ? eligibility.fen : '';
+    if (!preserveDisplay || state.tablebase.result?.fen !== eligibility.fen) {
+      state.tablebase.result = null;
+    }
+    state.tablebase.error = error?.message || 'Tablebase lookup failed.';
+    state.engine.summary = fallbackPrelude;
+    renderAnalysisOutputPanels();
+    if (fallbackToEngine && state.analysis.game && state.analysis.currentFen === eligibility.fen) {
+      await startStockfishAnalysisForCurrentPosition({ prelude: fallbackPrelude });
+    }
+    return false;
+  }
 }
 
 async function toggleAnalysis() {
@@ -2956,6 +3784,9 @@ async function toggleAnalysis() {
     renderHeaderMeta();
     return;
   }
+  if (state.tablebase.probing || state.engine.loading) {
+    return;
+  }
   if (state.engine.analyzing) {
     state.engine.stopping = true;
     state.engine.pendingFen = '';
@@ -2969,61 +3800,14 @@ async function toggleAnalysis() {
     }
     return;
   }
-  try {
-    state.engine.evalRailVisible = true;
-    const currentFen = state.analysis.currentFen;
-    const continuationRequested = hasAnalysisContinuationAvailable();
-    const continuationDepth = Number.isFinite(state.engine.resumeDepth) ? state.engine.resumeDepth : null;
-    const requestedWarmRestart = Boolean(
-      continuationRequested
-      && state.engine.worker
-      && state.engine.ready
-    );
-    if (continuationRequested) {
-      state.engine.summary = state.engine.ready
-        ? (Number.isFinite(continuationDepth)
-            ? `Continuing analysis past depth ${continuationDepth}...`
-            : 'Continuing analysis from the current board position...')
-        : 'Loading Stockfish engine...';
-    } else {
-      clearEngineSearchData();
-      state.engine.summary = state.engine.ready
-        ? `Analyzing current board position toward depth ${currentAnalysisTargetDepth()}...`
-        : 'Loading Stockfish engine...';
-    }
-    renderNotationPanel();
-    renderBoard();
-    renderAnalysisPanel();
-    const worker = await ensureStockfishReady();
-    const canWarmRestart = Boolean(requestedWarmRestart && worker === state.engine.worker);
-    startEngineSearch(worker, currentFen, {
-      preserveDisplay: continuationRequested,
-      freshGame: !canWarmRestart,
-      searchMode: continuationRequested ? ENGINE_SEARCH_MODE_CONTINUE : ENGINE_SEARCH_MODE_CHECKPOINT,
-      targetDepth: continuationRequested ? continuationDepth : currentAnalysisTargetDepth(),
-      summary: continuationRequested
-        ? (Number.isFinite(continuationDepth)
-            ? `Continuing analysis past depth ${continuationDepth}...`
-            : 'Continuing analysis from the current board position...')
-        : `Analyzing current board position toward depth ${currentAnalysisTargetDepth()}...`,
-    });
-  } catch (error) {
-    state.engine.ready = false;
-    state.engine.analyzing = false;
-    state.engine.stopping = false;
-    state.engine.searchFen = '';
-    state.engine.pendingFen = '';
-    state.engine.searchMode = '';
-    state.engine.pendingSearchMode = '';
-    clearEngineContinuationState();
-    state.engine.evalRailVisible = true;
-    clearEngineSearchData();
-    state.engine.summary = error?.message || 'Failed to start Stockfish.';
-    renderNotationPanel();
-    renderAnalysisPanel();
-    renderBoard();
-    renderHeaderMeta();
+
+  const currentFen = state.analysis.currentFen;
+  if (isTablebaseEligibleFen(currentFen)) {
+    await startTablebaseAnalysisForFen(currentFen, { fallbackToEngine: true });
+    return;
   }
+
+  await startStockfishAnalysisForCurrentPosition();
 }
 
 function resetAnalysisSelectionAndOutputAfterMove() {
@@ -3085,12 +3869,35 @@ function applyAnalysisMove(move) {
     state.analysis.currentNodeId = nodeId;
   }
 
-  syncAnalysisGameFromTree({ resetEngine: !shouldKeepAnalysisLive });
-  state.analysis.boardMessage = shouldKeepAnalysisLive
-    ? `Current move: ${applied.san}. Stockfish is following the new board position.`
+  const nextFen = state.analysis.game.fen();
+  const followedDisplay = createFollowedAnalysisDisplay(applied, nextFen);
+  const shouldKeepFollowedDisplay = Boolean(followedDisplay);
+  syncAnalysisGameFromTree({ resetEngine: !(shouldKeepAnalysisLive || shouldKeepFollowedDisplay) });
+  if (shouldKeepFollowedDisplay) {
+    applyFollowedAnalysisDisplay(followedDisplay);
+  }
+  const shouldProbeTablebaseAfterMove = Boolean(
+    state.engine.analyzing
+    && !state.engine.stopping
+    && isTablebaseEligibleFen(state.analysis.currentFen),
+  );
+  state.analysis.boardMessage = shouldProbeTablebaseAfterMove
+    ? `Current move: ${applied.san}. Tablebase is solving the new board position.`
+    : shouldKeepAnalysisLive
+      ? `Current move: ${applied.san}. Stockfish is following the new board position.`
     : `Current move: ${applied.san}. Analyze the current board position for fresh evaluation.`;
-  if (state.engine.analyzing && !state.engine.stopping) {
-    queueEngineSearchForFen(state.analysis.currentFen);
+  if (shouldProbeTablebaseAfterMove) {
+    void startTablebaseAnalysisForFen(state.analysis.currentFen, {
+      fallbackToEngine: true,
+      preserveDisplay: shouldKeepFollowedDisplay,
+    });
+  } else if (followedDisplay?.source === 'tablebase' && isTablebaseEligibleFen(state.analysis.currentFen)) {
+    void startTablebaseAnalysisForFen(state.analysis.currentFen, {
+      fallbackToEngine: false,
+      preserveDisplay: true,
+    });
+  } else if (state.engine.analyzing && !state.engine.stopping) {
+    queueEngineSearchForFen(state.analysis.currentFen, { preserveDisplay: shouldKeepFollowedDisplay });
   }
   schedulePersist();
   renderAll();
@@ -3541,10 +4348,9 @@ function renderBoard() {
     dom.evalBadgeWrap.setAttribute('aria-hidden', 'false');
     dom.evalBarWrap.setAttribute('aria-hidden', 'false');
     dom.evalBarWrap.dataset.orientation = state.boardOrientation;
-    dom.evalBadge.textContent = state.engine.evalLabel || '0.00';
-    const whiteFraction = Number.isFinite(state.engine.scoreValue)
-      ? scoreToWhiteFraction(state.engine.scoreType, state.engine.scoreValue)
-      : 0.5;
+    const evalDisplay = currentEvalDisplay();
+    dom.evalBadge.textContent = evalDisplay.label || '0.00';
+    const whiteFraction = Number.isFinite(evalDisplay.whiteFraction) ? evalDisplay.whiteFraction : 0.5;
     dom.evalBarWhite.style.height = `${(whiteFraction * 100).toFixed(1)}%`;
     dom.evalBarWhite.style.width = '100%';
     return;
@@ -3588,13 +4394,17 @@ function renderHeaderMeta() {
   const setupSummary = currentSetupSummary();
   const engineLabel = state.practice.active
     ? 'Practice mode'
-    : state.engine.loading
-      ? 'Stockfish loading'
-      : state.engine.analyzing
-        ? 'Stockfish live'
-        : state.engine.ready
-          ? 'Stockfish ready'
-          : 'Stockfish idle';
+    : state.tablebase.probing
+      ? 'Tablebase lookup'
+      : tablebaseResultActive()
+        ? 'Tablebase solved'
+        : state.engine.loading
+          ? 'Stockfish loading'
+          : state.engine.analyzing
+            ? 'Stockfish live'
+            : state.engine.ready
+              ? 'Stockfish ready'
+              : 'Stockfish idle';
 
   dom.boardTitleDisplay.textContent = state.title.trim() || 'Untitled position';
   dom.boardStageSubtitle.textContent = state.practice.active
@@ -3618,7 +4428,7 @@ function renderHeaderMeta() {
   dom.engineReadyLabel.textContent = engineLabel;
   if (dom.headerAnalyzeButton) {
     dom.headerAnalyzeButton.textContent = currentAnalyzeButtonLabel();
-    dom.headerAnalyzeButton.disabled = state.practice.active || !state.analysis.game || state.engine.loading || state.engine.stopping;
+    dom.headerAnalyzeButton.disabled = state.practice.active || !state.analysis.game || state.tablebase.probing || state.engine.loading || state.engine.stopping;
     dom.headerAnalyzeButton.classList.toggle('primary', !state.engine.analyzing && !state.engine.stopping);
     dom.headerAnalyzeButton.classList.toggle('danger', state.engine.analyzing || state.engine.stopping);
     dom.headerAnalyzeButton.setAttribute('aria-pressed', state.engine.analyzing ? 'true' : 'false');
@@ -3862,15 +4672,19 @@ function renderNotationPvBlock() {
   if (!state.pvLinesVisible) {
     return '';
   }
-  if (!state.engine.loading && !state.engine.stopping && !state.engine.analyzing && !hasVisibleEnginePvLines()) {
+  if (!state.engine.loading && !state.engine.stopping && !state.engine.analyzing && !hasVisibleAnalysisLines()) {
     return '';
   }
+  const title = tablebaseDisplayActive() ? 'Tablebase moves' : 'Engine lines';
+  const copy = tablebaseDisplayActive()
+    ? 'Top solved tablebase moves from the current board position.'
+    : 'Top 3 candidate lines from the current board position.';
   return `
-    <section class="notation-pv" aria-label="Engine lines">
+    <section class="notation-pv" aria-label="${escapeHtml(title)}">
       <div class="notation-pv-head">
         <div>
-          <h3 class="notation-pv-title">Engine lines</h3>
-          <p class="notation-pv-copy">Top 3 candidate lines from the current board position.</p>
+          <h3 class="notation-pv-title">${escapeHtml(title)}</h3>
+          <p class="notation-pv-copy">${escapeHtml(copy)}</p>
         </div>
       </div>
       ${renderPvLineListMarkup()}
@@ -4240,12 +5054,80 @@ function renderPracticeToolSection() {
   `;
 }
 
+function renderAnalysisStatusGridMarkup() {
+  const tablebaseResult = currentTablebaseResultForDisplay();
+  if (state.tablebase.probing || tablebaseResult) {
+    const result = tablebaseResult || null;
+    return `
+      <div class="status-grid">
+        <div class="status-tile">
+          <span class="status-tile-label">Result</span>
+          <span class="status-tile-value">${escapeHtml(result?.resultLabel || 'Probing')}</span>
+        </div>
+        <div class="status-tile">
+          <span class="status-tile-label">DTM</span>
+          <span class="status-tile-value">${escapeHtml(formatTablebaseMetric(result?.dtm))}</span>
+        </div>
+        <div class="status-tile">
+          <span class="status-tile-label">DTZ</span>
+          <span class="status-tile-value">${escapeHtml(formatTablebaseMetric(result?.dtz))}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="status-grid">
+      <div class="status-tile">
+        <span class="status-tile-label">Evaluation</span>
+        <span class="status-tile-value">${escapeHtml(state.engine.evalLabel || '0.00')}</span>
+      </div>
+      <div class="status-tile">
+        <span class="status-tile-label">Depth</span>
+        <span class="status-tile-value">${state.engine.depth ?? '—'}</span>
+      </div>
+      <div class="status-tile">
+        <span class="status-tile-label">Nodes</span>
+        <span class="status-tile-value">${escapeHtml(formatNodeCount(state.engine.nodes))}</span>
+      </div>
+    </div>
+  `;
+}
+
+function analysisStatusBannerKind(hasBoard) {
+  if (!hasBoard) {
+    return 'danger';
+  }
+  if (state.tablebase.probing || state.engine.analyzing) {
+    return 'warning';
+  }
+  return 'success';
+}
+
+function analysisStatusBannerTitle(hasBoard) {
+  if (!hasBoard) {
+    return 'Analysis unavailable';
+  }
+  return tablebaseDisplayActive() ? 'Tablebase status' : 'Engine status';
+}
+
+function analysisStatusSummary() {
+  if (state.tablebase.probing) {
+    return state.engine.summary || 'Probing Lichess tablebase for this up-to-3x3 endgame...';
+  }
+  const tablebaseResult = currentTablebaseResultForDisplay();
+  if (tablebaseResult) {
+    return tablebaseResult.summary;
+  }
+  return state.engine.summary;
+}
+
 function renderAnalysisPanel() {
   const hasBoard = Boolean(state.analysis.game);
   const annotateButtonClass = `action-button tonal ${state.annotations.enabled ? 'is-active' : ''}`.trim();
   const analyzeButtonLabel = currentAnalyzeButtonLabel();
-  const analysisButtonDisabled = state.practice.active || !hasBoard || state.engine.loading || state.engine.stopping;
-  const depthInputDisabled = state.practice.active || !hasBoard || state.engine.loading || state.engine.analyzing || state.engine.stopping;
+  const analysisButtonDisabled = state.practice.active || !hasBoard || state.tablebase.probing || state.engine.loading || state.engine.stopping;
+  const depthInputDisabled = state.practice.active || !hasBoard || state.tablebase.probing || state.engine.loading || state.engine.analyzing || state.engine.stopping;
   const analyzeButtonTone = state.engine.analyzing || state.engine.stopping ? 'danger' : 'primary';
   const pvLineMarkup = !state.practice.active && state.pvLinesVisible ? renderPvLineListMarkup() : '';
   dom.analysisPanel.innerHTML = `
@@ -4294,26 +5176,13 @@ function renderAnalysisPanel() {
           </div>
         </div>
       ` : `
-        <div class="status-grid">
-          <div class="status-tile">
-            <span class="status-tile-label">Evaluation</span>
-            <span class="status-tile-value">${escapeHtml(state.engine.evalLabel || '0.00')}</span>
-          </div>
-          <div class="status-tile">
-            <span class="status-tile-label">Depth</span>
-            <span class="status-tile-value">${state.engine.depth ?? '—'}</span>
-          </div>
-          <div class="status-tile">
-            <span class="status-tile-label">Nodes</span>
-            <span class="status-tile-value">${escapeHtml(formatNodeCount(state.engine.nodes))}</span>
-          </div>
-        </div>
+        ${renderAnalysisStatusGridMarkup()}
 
         <div class="stack-grid">
-          <div class="banner ${hasBoard ? (state.engine.analyzing ? 'warning' : 'success') : 'danger'}">
+          <div class="banner ${analysisStatusBannerKind(hasBoard)}">
             <div>
-              <strong>${hasBoard ? 'Engine status' : 'Analysis unavailable'}</strong>
-              <div>${escapeHtml(state.engine.summary)}</div>
+              <strong>${escapeHtml(analysisStatusBannerTitle(hasBoard))}</strong>
+              <div>${escapeHtml(analysisStatusSummary())}</div>
             </div>
           </div>
           ${pvLineMarkup}

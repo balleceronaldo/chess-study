@@ -19,9 +19,9 @@
   --app-height: 100vh;
   --font-body: "Inter", sans-serif;
   --font-display: "Inter", sans-serif;
-  --bg-top: #f6f8fb;
-  --bg-mid: #eef2f7;
-  --bg-bottom: #e7edf5;
+  --bg-top: #d9e0ea;
+  --bg-mid: #d2dbe6;
+  --bg-bottom: #c8d3e0;
   --panel: rgba(255, 255, 255, 0.9);
   --panel-strong: rgba(255, 255, 255, 0.97);
   --panel-border: rgba(180, 194, 214, 0.72);
@@ -77,7 +77,7 @@
   --notation-underline-soft: rgba(42, 95, 184, 0.22);
   --notation-underline-strong: rgba(42, 95, 184, 0.42);
   --variation-border: rgba(42, 95, 184, 0.22);
-  --notation-text-size: clamp(1.18rem, 1.6vw, 1.42rem);
+  --notation-text-size: clamp(1.3rem, 1.85vw, 1.62rem);
   --nav-button-border: rgba(188, 199, 216, 0.72);
   --nav-button-bg: rgba(255, 255, 255, 0.75);
   --nav-button-hover-border: rgba(42, 95, 184, 0.24);
@@ -153,10 +153,10 @@
   --legal-target: rgba(31, 86, 136, 0.72);
   --legal-capture: rgba(173, 60, 60, 0.78);
   --drag-hover: rgba(255, 210, 98, 0.42);
-  --annotation-accent-rgb: 84, 168, 109;
-  --annotation-paint: rgba(var(--annotation-accent-rgb), 0.66);
-  --annotation-ring: rgba(var(--annotation-accent-rgb), 0.92);
-  --annotation-arrow: rgba(var(--annotation-accent-rgb), 0.94);
+  --annotation-accent-rgb: 24, 102, 56;
+  --annotation-paint: rgba(var(--annotation-accent-rgb), 0.78);
+  --annotation-ring: rgba(var(--annotation-accent-rgb), 0.96);
+  --annotation-arrow: rgba(var(--annotation-accent-rgb), 0.96);
   --modal-scrim: rgba(12, 18, 28, 0.46);
   --modal-border: rgba(193, 203, 220, 0.7);
   --modal-bg: rgba(255, 255, 255, 0.98);
@@ -308,10 +308,10 @@
   --legal-target: rgba(169, 196, 255, 0.72);
   --legal-capture: rgba(196, 102, 75, 0.86);
   --drag-hover: rgba(140, 183, 255, 0.24);
-  --annotation-accent-rgb: 120, 196, 134;
-  --annotation-paint: rgba(var(--annotation-accent-rgb), 0.62);
-  --annotation-ring: rgba(var(--annotation-accent-rgb), 0.94);
-  --annotation-arrow: rgba(var(--annotation-accent-rgb), 0.94);
+  --annotation-accent-rgb: 38, 128, 74;
+  --annotation-paint: rgba(var(--annotation-accent-rgb), 0.72);
+  --annotation-ring: rgba(var(--annotation-accent-rgb), 0.96);
+  --annotation-arrow: rgba(var(--annotation-accent-rgb), 0.96);
   --modal-scrim: rgba(5, 10, 18, 0.72);
   --modal-border: rgba(44, 69, 105, 0.82);
   --modal-bg: rgba(24, 41, 67, 0.98);
@@ -1217,7 +1217,7 @@ code {
 .notation-move-number {
   margin-right: 0;
   color: var(--text-soft);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .notation-move {
@@ -1229,7 +1229,7 @@ code {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-weight: 700;
+  font-weight: 600;
   line-height: inherit;
   box-shadow: inset 0 -1px 0 transparent;
   transition: color var(--ease), box-shadow var(--ease);
@@ -1854,6 +1854,8 @@ code {
 
 .pv-line-text {
   color: var(--text);
+  font-size: clamp(1.06rem, 1.32vw, 1.22rem);
+  font-weight: 500;
   line-height: 1.55;
   word-break: break-word;
 }
@@ -1882,7 +1884,7 @@ code {
   border: 1px solid var(--move-index-border);
   background: var(--move-index-bg);
   font-size: 0.84rem;
-  font-weight: 800;
+  font-weight: 600;
   color: var(--text-soft);
 }
 
@@ -1891,7 +1893,7 @@ code {
   padding: 0.7rem 0.8rem;
   border-radius: 1rem;
   text-align: left;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .move-button.is-current {
@@ -2088,7 +2090,7 @@ code {
 
 @media (max-width: 1100px) and (min-width: 640px) and (orientation: landscape) and (pointer: coarse) {
   :root {
-    --notation-text-size: clamp(1rem, 2vw, 1.16rem);
+    --notation-text-size: clamp(1.1rem, 2.15vw, 1.28rem);
   }
 
   html,

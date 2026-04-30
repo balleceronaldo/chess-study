@@ -22,12 +22,24 @@ For normal use, you do not need to install anything or run a local server.
 - play moves from that position
 - create main lines and side variations
 - run Stockfish analysis in the browser
+- probe the Lichess tablebase for up-to-3x3 endgames
 - show the top 3 engine lines for the current position
 - practice either the selected lesson line or any recorded branch
 - draw arrows, circles, and highlighted squares
 - import and export PGN with variations and comments
 - write a lesson note
 - save and reopen lessons as files
+
+## Recent Improvements
+
+- added Lichess tablebase analysis for legal up-to-3x3 endgames, including pawns, with no backend or API key required
+- tablebase results now replace Stockfish automatically for eligible positions and fall back to Stockfish if the lookup is unavailable, rate-limited, offline, or out of scope
+- tablebase move output now shows numbered SAN continuation lines, such as `1. Kb4 Kc6 2. ...`, instead of only result, DTM, and DTZ fields
+- tablebase and engine PV lines stay visible after a move is played when the move belongs to one of the displayed lines, matching the smoother Lichess-style analysis flow
+- analysis display now maps tablebase results into the existing eval badge, eval bar, status grid, and move-line panel
+- lesson title, notation, and analysis move text are larger, while move-list text uses a lighter semibold weight
+- light theme background is darker and easier on the eyes
+- right-click annotation green is darker in both light and dark themes
 
 ## Main Workspace
 
@@ -142,6 +154,23 @@ Recommended setups:
 - strongest local setup: add `stockfish-18.js` and `stockfish-18.wasm`, then run `python local_server.py`
 
 If you only install a multi-threaded bundle, the app needs the local server above or another server that sends `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
+
+## Tablebase Analysis
+
+For legal endgames with one king per side, no castling rights, up to 3 pieces per side, and up to 6 pieces total, `Analyze` uses the public Lichess tablebase before Stockfish.
+
+This works from GitHub Pages or any static deployment because the request goes directly from the browser to:
+
+```text
+https://tablebase.lichess.org/standard
+```
+
+Important limits:
+
+- tablebase lookup needs internet access
+- results are cached per full FEN in the browser session
+- solved move lines use bounded follow-up probes to build SAN continuations
+- if the lookup is unavailable, rate-limited, or returns an unexpected response, the app falls back to Stockfish
 
 ## Local Development
 

@@ -271,6 +271,10 @@ The app has one main engine button beside the three-dot menu:
 - `Analyze`: start live Stockfish analysis
 - `Stop`: stop the current search
 
+If the current position is a legal tablebase endgame, `Analyze` checks the Lichess tablebase instead of starting Stockfish. This applies when the board has one king per side, no castling rights, up to 3 pieces per side, and up to 6 pieces total. Pawns are included.
+
+Tablebase lookup needs internet access. If the lookup is unavailable or rate-limited, the app automatically falls back to Stockfish.
+
 The `Analysis` tab also includes:
 
 - the same `Analyze` / `Stop` action
@@ -286,6 +290,13 @@ The engine area shows:
 - engine status text
 - the top 3 principal variation lines, which are the engine's candidate best lines
 
+For tablebase positions, the same area shows:
+
+- result
+- DTM
+- DTZ
+- the top tablebase moves returned for the current board
+
 The board can also show:
 
 - an evaluation badge
@@ -297,11 +308,19 @@ These only appear outside `Setup` and only after the engine has produced a score
 
 When analysis is running, the app can show 3 engine lines below the move list.
 
-Each line shows:
+For tablebase endgames, this same area shows solved tablebase moves instead of Stockfish PV lines.
+
+Engine lines show:
 
 - `PV 1`, `PV 2`, or `PV 3`
 - that line's evaluation
 - the sequence of moves for that candidate line
+
+Tablebase lines show:
+
+- `TB 1`, `TB 2`, or `TB 3`
+- the solved continuation with normal move numbers
+- an ellipsis if the continuation reached the app's request or time limit before mate
 
 This is useful because you can see more than one engine idea, not just the single best move.
 
