@@ -19,9 +19,9 @@
   --app-height: 100vh;
   --font-body: "Inter", sans-serif;
   --font-display: "Inter", sans-serif;
-  --bg-top: #d9e0ea;
-  --bg-mid: #d2dbe6;
-  --bg-bottom: #c8d3e0;
+  --bg-top: #c3cedb;
+  --bg-mid: #b7c4d2;
+  --bg-bottom: #aab9ca;
   --panel: rgba(255, 255, 255, 0.9);
   --panel-strong: rgba(255, 255, 255, 0.97);
   --panel-border: rgba(180, 194, 214, 0.72);
@@ -36,8 +36,8 @@
   --success: #3e8f68;
   --warning: #c7923a;
   --danger: #c4664b;
-  --bg-orb-a: radial-gradient(circle, rgba(116, 164, 226, 0.34) 0%, rgba(116, 164, 226, 0.08) 42%, rgba(116, 164, 226, 0) 72%);
-  --bg-orb-b: radial-gradient(circle, rgba(95, 198, 177, 0.18) 0%, rgba(95, 198, 177, 0.05) 46%, rgba(95, 198, 177, 0) 78%);
+  --bg-orb-a: radial-gradient(circle, rgba(82, 128, 188, 0.28) 0%, rgba(82, 128, 188, 0.06) 42%, rgba(82, 128, 188, 0) 72%);
+  --bg-orb-b: radial-gradient(circle, rgba(62, 154, 134, 0.14) 0%, rgba(62, 154, 134, 0.04) 46%, rgba(62, 154, 134, 0) 78%);
   --bg-grid-line: rgba(145, 166, 194, 0.08);
   --bg-grid-mask: linear-gradient(180deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.12));
   --chip-border: rgba(191, 201, 219, 0.84);
